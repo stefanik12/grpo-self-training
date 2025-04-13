@@ -16,17 +16,24 @@ Group Relative Policy Optimization (GRPO) is an algorithm proposed by Deepseek f
 2. For each question $q_i$, sample $M$ answers $a_{i,1}, a_{i,2}, \cdots, a_{i,M}$.
 3. Compute the reward $r_{i,j}$ for each answer $a_{i,j}$.
 4. Compute the mean and std of the rewards for each question $q_i$.
+
 $$
-\begin{align*}
+\begin{aligned}
 \mu_i &\leftarrow \text{mean}(r_{i,1}, r_{i,2}, \cdots, r_{i,M}) \\
 \sigma_i &\leftarrow \text{std}(r_{i,1}, r_{i,2}, \cdots, r_{i,M})
-\end{align*}
+\end{aligned}
 $$
-5. For each token $t$ in the answer $a_{i,j}$, compute the advantage as $$A_{i,j}[t] \leftarrow \frac{r_{i,j} - \mu_i}{\sigma_i}$$
+
+5. For each token $t$ in the answer $a_{i,j}$, compute the advantage as
+
+$$A_{i,j}[t] \leftarrow \frac{r_{i,j} - \mu_i}{\sigma_i}$$
+
 6. Compute policy gradient using PPO surrogate objective. For simplicity, we will only do one policy update per iteration, in which the gradient of the PPO objective is equivalent to following vanilla policy gradient estimation (per token).
+
 $$
 \nabla_\theta \log \pi_\theta(a_{i,j}[t]) \cdot A_{i,j}[t]
 $$
+
 7. Update the policy network $\pi(\theta)$ using the gradient. Go back to step 1.
 
 ## CountDown Task
