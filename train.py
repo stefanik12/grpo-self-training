@@ -15,7 +15,7 @@ from qwen2_model import Transformer
 from tokenizer import Tokenizer
 
 
-def evaluate(model, tokenizer, device, config):
+def evaluate(model, tokenizer, device, dtype, config):
     test_dataset = CountdownTasksDataset(
         data_path=config["data"]["path"],
         tokenizer=tokenizer,
@@ -44,8 +44,9 @@ def evaluate(model, tokenizer, device, config):
             end_token=tokenizer.eos_token,
             end_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.pad_token_id,
-            device=device,
             reward_function=reward_function,
+            device=device,
+            dtype=dtype,
         )
         success.extend([episode.reward_info["answer_reward"] for episode in episodes])
     return np.mean(success)
@@ -157,7 +158,7 @@ def main(config_path: str):
             f"mean_response_len: {mean_response_len:.2f}"
         )
         if step % config["training"]["eval_interval"] == 0:
-            eval_success_rate = evaluate(model, tokenizer, device, config)
+            eval_success_rate = evaluate(model, tokenizer, device, dtype, config)
             print(f"\rEval success rate: {eval_success_rate:.2f}" + " " * 100)
             tb_writer.add_scalar("success_rate/eval", eval_success_rate, step)
 
