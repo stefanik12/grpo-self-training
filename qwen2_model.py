@@ -200,12 +200,12 @@ class TransformerBlock(nn.Module):
 
 
 class Qwen2RotaryEmbedding(nn.Module):
-    def __init__(self, config: Qwen2Config, device=None):
+    def __init__(self, config: Qwen2Config, device: torch.device):
         super().__init__()
         self.config = config
         base = config.rope_theta
         dim = config.hidden_size // config.num_attention_heads
-        with torch.autocast(device_type="cuda", dtype=torch.float32):
+        with torch.autocast(device_type=device.type, dtype=torch.float32):
             inv_freq = 1.0 / (
                 base
                 ** (torch.arange(0, dim, 2, dtype=torch.int64).float().to(device) / dim)
@@ -234,7 +234,7 @@ class Transformer(nn.Module):
 
         self.embed_tokens = torch.nn.Embedding(params.vocab_size, params.hidden_size)
         with torch.device(device):
-            self.rotary_emb = Qwen2RotaryEmbedding(config=params)
+            self.rotary_emb = Qwen2RotaryEmbedding(config=params, device=device)
 
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.num_hidden_layers):

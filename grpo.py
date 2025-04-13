@@ -2,7 +2,7 @@ import dataclasses
 import gc
 import math
 from collections import defaultdict
-from typing import Callable, List, Optional
+from typing import Callable, List
 
 import numpy as np
 import torch
@@ -22,8 +22,8 @@ def rollout(
     end_token: str,
     end_token_id: int,
     pad_token_id: int,
-    device: torch.device,
     reward_function: Callable,
+    device: torch.device,
     dtype: torch.dtype,
 ) -> List[Episode]:
     prefix_token_ids = batch.prefix_token_ids
@@ -37,18 +37,18 @@ def rollout(
         device=device,
         dtype=dtype,
     )
-    tokens = torch.full((bsz, total_len), pad_token_id, dtype=torch.long, device="cuda")
+    tokens = torch.full((bsz, total_len), pad_token_id, dtype=torch.long, device=device)
     for k, t in enumerate(prefix_token_ids):
         offset = k * num_answer_per_question
         for i in range(num_answer_per_question):
             tokens[offset + i, : len(t)] = torch.tensor(
-                t, dtype=torch.long, device="cuda"
+                t, dtype=torch.long, device=device
             )
 
     prev_pos = 0
     input_text_mask = tokens != pad_token_id
     assert min_prompt_len < total_len
-    is_finished = torch.zeros((bsz,), dtype=torch.bool, device="cuda")
+    is_finished = torch.zeros((bsz,), dtype=torch.bool, device=device)
 
     for cur_pos in range(min_prompt_len, total_len):
         print(
@@ -56,7 +56,7 @@ def rollout(
             flush=True,
             end="",
         )
-        with torch.autocast(device_type="cuda", dtype=dtype):
+        with torch.autocast(device_type=device.type, dtype=dtype):
             logits = model.inference(tokens[:, prev_pos:cur_pos], prev_pos)
         probs = torch.softmax(logits[:, -1], dim=-1)
         next_token = torch.multinomial(probs, num_samples=1)
@@ -136,8 +136,8 @@ def update_policy(
     episodes: List[Episode],
     micro_batch_size: int,
     pad_token_id: int,
-    device: torch.device,
     max_grad_norm: float,
+    device: torch.device,
     dtype: torch.dtype,
 ):
     """Update the policy using the GRPO algorithm."""
@@ -177,7 +177,7 @@ def update_policy(
             batch_advantages, device=device, dtype=torch.float32
         )
 
-        with torch.autocast(device_type="cuda", dtype=dtype):
+        with torch.autocast(device_type=device.type, dtype=dtype):
             input_token_ids = batch_token_ids[:, :-1]
             target_token_ids = batch_token_ids[:, 1:]
             target_masks = batch_masks[:, 1:]

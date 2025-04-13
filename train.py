@@ -122,8 +122,8 @@ def main(config_path: str):
             optimizer=optimizer,
             episodes=episodes,
             micro_batch_size=config["training"]["micro_batch_size"],
-            max_grad_norm=config["training"]["max_grad_norm"],
             pad_token_id=tokenizer.pad_token_id,
+            max_grad_norm=config["training"]["max_grad_norm"],
             device=device,
             dtype=dtype,
         )
