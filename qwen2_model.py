@@ -1,6 +1,4 @@
-import inspect
 import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Union
@@ -33,53 +31,6 @@ class Qwen2Config:
     use_cache: bool = True
     use_sliding_window: bool = False
     vocab_size: int = 151936
-
-
-class LoraLinear(nn.Linear):
-    def __init__(self, in_features, out_features, bias):
-        super().__init__(in_features, out_features, bias=bias)
-        self.rank = None
-        self.lora_enabled = False
-        self.w_down = None
-        self.w_up = None
-
-    def init_lora(self, rank, dtype, device):
-        self.rank = rank
-        self.w_down = nn.Parameter(
-            torch.randn(self.in_features, self.rank, dtype=dtype, device=device)
-            * 1.0
-            / math.sqrt(self.in_features)
-        )
-        self.w_up = nn.Parameter(
-            torch.zeros(self.rank, self.out_features, dtype=dtype, device=device)
-        )
-        self.weight.requires_grad = False
-        if self.bias is not None:
-            self.bias.requires_grad = False
-        self.enable_lora()
-
-    def enable_lora(self):
-        assert self.w_down is not None and self.w_up is not None
-        self.lora_enabled = True
-
-    def disable_lora(self):
-        self.lora_enabled = False
-
-    def remove_lora(self):
-        if self.lora_enabled:
-            self.weight.data.add_((self.w_down @ self.w_up).T)
-        self.lora_enabled = False
-        self.w_down = None
-        self.w_up = None
-
-    def forward(self, x):
-        output = super().forward(x)
-        if self.lora_enabled:
-            output = output + (x @ self.w_down) @ self.w_up
-        return output
-
-
-nn.Linear = LoraLinear
 
 
 class RMSNorm(torch.nn.Module):
