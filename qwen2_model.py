@@ -73,9 +73,8 @@ class Attention(nn.Module):
             if args.num_key_value_heads is None
             else args.num_key_value_heads
         )
-        model_parallel_size = 1
-        self.n_heads = args.num_attention_heads // model_parallel_size
-        self.n_kv_heads = self.n_kv_heads // model_parallel_size
+        self.n_heads = args.num_attention_heads
+        self.n_kv_heads = self.n_kv_heads
         self.n_rep = self.n_heads // self.n_kv_heads
         self.head_dim = args.hidden_size // args.num_attention_heads
 
