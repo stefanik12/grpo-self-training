@@ -144,6 +144,7 @@ def update_policy(
     # sort episodes by token length for efficient (micro-)batching
     episodes.sort(key=lambda x: len(x.prefix_token_ids) + len(x.generated_token_ids))
     num_micro_batches = math.ceil(len(episodes) / micro_batch_size)
+    num_target_tokens = sum(len(episode.generated_token_ids) for episode in episodes)
     for i in range(0, len(episodes), micro_batch_size):
         print(
             f"\r* Computing policy gradient: {i:>2d}/{len(episodes):>2d}",
@@ -190,8 +191,8 @@ def update_policy(
         ).reshape(input_token_ids.shape[0], -1)
         obj = logprobs * batch_advantages[:, None]
         # per-token objective
-        obj = (obj * target_masks).sum() / (1e-4 + target_masks.sum())
-        loss = -obj / num_micro_batches
+        obj = (obj * target_masks).sum() / num_target_tokens
+        loss = -obj
         loss.backward()
 
     # update the policy
