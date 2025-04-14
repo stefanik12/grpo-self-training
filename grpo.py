@@ -19,13 +19,13 @@ def rollout(
     tokenizer: Tokenizer,
     max_gen_len: int,
     num_answer_per_question: int,
-    end_token: str,
-    end_token_id: int,
-    pad_token_id: int,
     reward_function: Callable,
     device: torch.device,
     dtype: torch.dtype,
 ) -> List[Episode]:
+    end_token = tokenizer.eos_token
+    end_token_id = tokenizer.eos_token_id
+    pad_token_id = tokenizer.pad_token_id
     prefix_token_ids = batch.prefix_token_ids
     bsz = len(batch.prefix) * num_answer_per_question
     min_prompt_len = min(len(t) for t in prefix_token_ids)
@@ -77,7 +77,6 @@ def rollout(
     torch.cuda.empty_cache()
     is_finished_list = is_finished.tolist()
     tokens_list = tokens.tolist()
-    torch.cuda.synchronize()
 
     # prepare the output episodes
     episodes = []

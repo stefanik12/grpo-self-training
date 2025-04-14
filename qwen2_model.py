@@ -250,10 +250,6 @@ class Transformer(nn.Module):
         else:
             return self.lm_head(x)
 
-    def init_kv_cache(self, batch_size: int, max_seq_len: int, dtype: torch.dtype):
-        for layer in self.layers:
-            layer.attention.init_kv_cache(batch_size, max_seq_len, dtype=dtype)
-
     def forward(self, tokens: torch.Tensor):
         _bsz, seqlen = tokens.shape
         h = self.embed_tokens(tokens)
