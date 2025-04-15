@@ -168,7 +168,7 @@ def main(config_path: str):
         tb_writer.add_scalar("mean_response_len", mean_response_len, step)
         for i, episode in enumerate(episodes):
             # Wrap text in <pre> tags to preserve the original text
-            # as TensorBoard treats the text as HTML.
+            # as TensorBoard treats text as markdown.
             tb_writer.add_text(f"text_{i}", f"<pre>{episode.text}</pre>", step)
 
         # save checkpoint
