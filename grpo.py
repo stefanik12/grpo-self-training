@@ -129,6 +129,12 @@ def normalize_rewards_per_group(episodes: List[Episode]) -> List[Episode]:
     return output
 
 
+def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
+    probs = torch.nn.functional.softmax(logits, dim=-1)
+    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(probs * logits, dim=-1)
+    return entropy
+
+
 def update_policy(
     model,
     optimizer,
@@ -145,6 +151,8 @@ def update_policy(
     episodes.sort(key=lambda x: len(x.prefix_token_ids) + len(x.generated_token_ids))
     num_micro_batches = math.ceil(len(episodes) / micro_batch_size)
     num_target_tokens = sum(len(episode.generated_token_ids) for episode in episodes)
+    entropy = 0.0
+
     for i in range(0, len(episodes), micro_batch_size):
         print(
             f"\r* Computing policy gradient: {i:>2d}/{len(episodes):>2d}",
@@ -183,13 +191,18 @@ def update_policy(
             target_masks = batch_masks[:, 1:]
             logits = model.forward(input_token_ids).float()
 
-        logprobs = -torch.nn.functional.cross_entropy(
+        log_probs = -torch.nn.functional.cross_entropy(
             logits.reshape(-1, logits.size(-1)),
             target_token_ids.reshape(-1),
             ignore_index=pad_token_id,
             reduction="none",
         ).reshape(input_token_ids.shape[0], -1)
-        obj = logprobs * batch_advantages[:, None]
+
+        with torch.no_grad():
+            token_entropy = compute_entropy(logits)
+            entropy = entropy + (token_entropy * target_masks).sum() / num_target_tokens
+
+        obj = log_probs * batch_advantages[:, None]
         # per-token objective
         obj = (obj * target_masks).sum() / num_target_tokens
         loss = -obj
@@ -201,4 +214,8 @@ def update_policy(
     )
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
-    return {"loss": loss.item(), "grad_norm": grad_norm.item()}
+    return {
+        "loss": loss.item(),
+        "grad_norm": grad_norm.item(),
+        "entropy": entropy.item(),
+    }

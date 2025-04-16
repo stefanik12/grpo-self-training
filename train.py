@@ -139,6 +139,7 @@ def main(config_path: str):
         success_rate = np.mean(answer_reward)
         format_reward = np.mean(formatted_reward)
         grad_norm = results["grad_norm"]
+        entropy = results["entropy"]
         lr = optimizer.param_groups[0]["lr"]
         loss = results["loss"]
         mean_response_len = np.mean(
@@ -149,7 +150,8 @@ def main(config_path: str):
             f"train success_rate: {success_rate:.2f}, "
             f"grad_norm: {grad_norm:.2f}, duration: {duration:.2f}, "
             f"num_finished_episodes: {num_finished_episodes}, "
-            f"mean_response_len: {mean_response_len:.2f}"
+            f"mean_response_len: {mean_response_len:.2f}, "
+            f"entropy: {entropy:.2f}"
         )
         if step % config["training"]["eval_interval"] == 0:
             eval_success_rate = evaluate(model, tokenizer, device, dtype, config)
@@ -166,6 +168,7 @@ def main(config_path: str):
         tb_writer.add_scalar("num_finished_episodes", num_finished_episodes, step)
         tb_writer.add_scalar("learning_rate", lr, step)
         tb_writer.add_scalar("mean_response_len", mean_response_len, step)
+        tb_writer.add_scalar("entropy", entropy, step)
         for i, episode in enumerate(episodes):
             # Wrap text in <pre> tags to preserve the original text
             # as TensorBoard treats text as markdown.
