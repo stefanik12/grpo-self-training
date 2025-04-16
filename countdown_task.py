@@ -88,9 +88,9 @@ def format_reward_function(response: str, end_token: Optional[str] = None) -> fl
     if end_token and response.endswith(end_token):
         response = response[: -len(end_token)]
 
-    think_regex = r"<think>[^<]*<\/think>"
-    answer_regex = r"<answer>[^<]*<\/answer>"
-    full_format_regex = r"^<think>[^<]*<\/think>\n<answer>[^<]*<\/answer>$"
+    think_regex = r"<think>.*?<\/think>"
+    answer_regex = r"<answer>.*?<\/answer>"
+    full_format_regex = r"^<think>.*?<\/think>\n<answer>.*?<\/answer>$"
 
     think_match = re.search(think_regex, response, re.DOTALL)
     answer_match = re.search(answer_regex, response, re.DOTALL)
@@ -116,7 +116,7 @@ def answer_reward_function(
     """
     Checks if the answer uses all numbers exactly once and evaluates to the target
     """
-    answer_regex = r"<answer>([^<]*)</answer>"
+    answer_regex = r"<answer>(.*?)<\/answer>"
     answer_match = re.search(answer_regex, response, re.DOTALL)
     if not answer_match:
         return 0.0
