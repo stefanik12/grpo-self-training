@@ -68,7 +68,9 @@ def rollout(
         next_token = torch.where(is_finished, pad_token_id, next_token)
         tokens[:, cur_pos] = next_token
         if end_token_id is not None:
-            is_finished = is_finished | (next_token == end_token_id)
+            is_end_token = next_token == end_token_id
+            is_generated_token = ~input_text_mask[:, cur_pos]
+            is_finished = is_finished | (is_end_token & is_generated_token)
         prev_pos = cur_pos
         if is_finished.all():
             break
