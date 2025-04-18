@@ -1,8 +1,9 @@
 # GRPO:Zero
 
-GRPO training with minimal dependencies. We implement almost everything from scratch and only depend on `tokenizers` for tokenization and `pytorch` for training. 
+GRPO training with minimal dependencies (and low GPU memory usage!). We implement almost everything from scratch and only depend on `tokenizers` for tokenization and `pytorch` for training. 
 - No `transformers` and `vLLM` dependencies! 
-- The default config is set to run on a single A40 GPU (48GB VRAM) for a few hours to get good results. (A40 costs `$0.44` per hour if you rent it from RunPod.)
+- The default config is set to run on a single A40 GPU (48GB VRAM) for a few hours to get good results. (An A40 costs `$0.44` per hour if you rent it from RunPod.)
+- We also support training with a 24GB VRAM GPU (e.g., an RTX 4090 GPU) by offloading the optimizer to CPU. Fortunately, this only adds a small overhead to the training because we only update the policy network a few hundred times during the entire training process.
 - We support several improvements over the original GRPO algorithm from the [DAPO project](https://arxiv.org/abs/2503.14476), including:
     - **Token-level policy gradient loss**: every token is equally weighted in the policy gradient loss.
     - **Removing KL Divergence**: the KL divergence is not used in the policy gradient loss. This reduces GPU memory usage as we no longer need the reference policy network.
@@ -77,9 +78,10 @@ git clone https://huggingface.co/datasets/Jiayi-Pan/Countdown-Tasks-3to4
 
 # download the pretrained model
 git clone https://huggingface.co/Qwen/Qwen2.5-3B-Instruct
-
 # train the model
 uv run train.py
+# train the model with a 24GB VRAM GPU (e.g., an RTX 4090 GPU)
+uv run train.py --config config_24GB.yaml
 ```
 ## Acknowledgements
 

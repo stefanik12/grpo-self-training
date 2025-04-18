@@ -12,6 +12,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 
 from countdown_task import CountdownTasksDataset, reward_function
 from grpo import rollout, update_policy
+from optimizer import MemoryEfficientAdamW
 from qwen2_model import Transformer
 from tokenizer import Tokenizer
 
@@ -89,11 +90,12 @@ def main(config_path: str):
 
     model = Transformer.from_pretrained(pretrained_model_path, device=device).train()
 
-    optimizer = torch.optim.AdamW(
+    optimizer = MemoryEfficientAdamW(
         model.parameters(),
         lr=config["training"]["learning_rate"],
         weight_decay=config["training"]["weight_decay"],
         betas=config["training"]["betas"],
+        enabled=config["training"]["memory_efficient_adamw"],
     )
 
     start_time = time.time()
