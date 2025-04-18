@@ -70,11 +70,6 @@ class MemoryEfficientAdamW(AdamW):
                     pin_memory = self.pin_memory
                     dtype = torch.float32
 
-                    # Keep 1D tensors on same device as param, otherwise use CPU
-                    if len(p.data.shape) == 1 and False:
-                        device = p.device
-                        pin_memory = False
-
                     state["exp_avg"] = torch.zeros_like(
                         p.data, device=device, pin_memory=pin_memory, dtype=dtype
                     )
