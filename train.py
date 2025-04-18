@@ -1,3 +1,4 @@
+import html
 import time
 from argparse import ArgumentParser
 from datetime import datetime
@@ -170,9 +171,9 @@ def main(config_path: str):
         tb_writer.add_scalar("mean_response_len", mean_response_len, step)
         tb_writer.add_scalar("entropy", entropy, step)
         for i, episode in enumerate(episodes):
-            # Wrap text in <pre> tags to preserve the original text
-            # as TensorBoard treats text as markdown.
-            tb_writer.add_text(f"text_{i}", f"<pre>{episode.text}</pre>", step)
+            # TensorBoard treats text as markdown.
+            text = html.escape(episode.text)
+            tb_writer.add_text(f"text_{i}", f"<pre>{text}</pre>", step)
 
         # save checkpoint
         if step % config["training"]["ckpt_save_interval"] == 0:
