@@ -31,7 +31,7 @@ def rollout(
     min_prompt_len = min(len(t) for t in prefix_token_ids)
     max_prompt_len = max(len(t) for t in prefix_token_ids)
     total_len = max_gen_len + max_prompt_len
-    model.init_kv_cache(
+    model.module.init_kv_cache(
         max_batch_size=bsz,
         max_seq_len=total_len,
         device=device,
@@ -57,7 +57,7 @@ def rollout(
             end="",
         )
         with torch.autocast(device_type=device.type, dtype=dtype):
-            logits = model.inference(tokens[:, prev_pos:cur_pos], prev_pos)
+            logits = model.module.inference(tokens[:, prev_pos:cur_pos], prev_pos)
         probs = torch.softmax(logits[:, -1], dim=-1)
         next_token = torch.multinomial(probs, num_samples=1)
         next_token = next_token.reshape(-1)
@@ -74,7 +74,7 @@ def rollout(
         prev_pos = cur_pos
         if is_finished.all():
             break
-    model.del_kv_cache()
+    model.module.del_kv_cache()
     gc.collect()
     torch.cuda.empty_cache()
     is_finished_list = is_finished.tolist()
@@ -191,7 +191,7 @@ def update_policy(
             input_token_ids = batch_token_ids[:, :-1]
             target_token_ids = batch_token_ids[:, 1:]
             target_masks = batch_masks[:, 1:]
-            logits = model.forward(input_token_ids).float()
+            logits = model(input_token_ids).float()
 
         log_probs = -torch.nn.functional.cross_entropy(
             logits.reshape(-1, logits.size(-1)),

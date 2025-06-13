@@ -1,3 +1,11 @@
+# Self-training using GRPO
+
+WIP notes:
+
+* Add `wandb` into dependencies manually (getting rid of tensorboard) -- TODO: find out how and update uv.lock
+* Example is now runnable on multiple GPUs with: `CUDA_VISIBLE_DEVICES=4,0 torchrun --standalone --nnodes=1 --nproc-per-node=2 train.py`
+* The code is still runnable as a standalone python script: `CUDA_VISIBLE_DEVICES python train.py` (by default pointing to the attached `--config config.yaml`)
+
 # GRPO:Zero
 
 GRPO training with minimal dependencies (and low GPU memory usage!). We implement almost everything from scratch and only depend on `tokenizers` for tokenization and `pytorch` for training. 

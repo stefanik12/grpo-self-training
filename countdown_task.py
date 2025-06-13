@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from torch.utils.data import Dataset
+import torch
 
 from data_types import MiniBatch
 from tokenizer import Tokenizer
@@ -38,11 +39,18 @@ class CountdownTasksDataset(Dataset):
         )
         self.tokenizer = tokenizer
 
+        # distributed support
+        worker_info = torch.utils.data.get_worker_info()
+        self.worker_rank = worker_info.id if worker_info is not None else 0
+        self.num_workers = worker_info.num_workers if worker_info is not None else 1
+
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        item = self.data.iloc[idx].to_dict()
+        # this should produce exclusive indices for each worker:
+        worker_idx = idx * self.num_workers + self.worker_rank
+        item = self.data.iloc[worker_idx].to_dict()
         item.update(self.encode_prefix(item["nums"], item["target"]))
         return item
 

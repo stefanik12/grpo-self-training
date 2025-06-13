@@ -1,4 +1,5 @@
 import html
+import os
 import time
 from argparse import ArgumentParser
 from datetime import datetime
@@ -8,13 +9,14 @@ import numpy as np
 import torch
 import yaml
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard.writer import SummaryWriter
+import wandb 
 
 from countdown_task import CountdownTasksDataset, reward_function
 from grpo import rollout, update_policy
 from optimizer import MemoryEfficientAdamW
 from qwen2_model import Transformer
 from tokenizer import Tokenizer
+import torch.distributed as dist
 
 
 def evaluate(model, tokenizer, device, dtype, config):
@@ -70,7 +72,9 @@ def main(config_path: str):
     NUM_ANSWERS_PER_QUESTION = BATCH_SIZE // NUM_QUESTIONS_PER_BATCH
 
     current_time = datetime.now().strftime(r"%Y%m%d-%H%M%S")
-    tb_writer = SummaryWriter(log_dir=f"{config['training']['log_dir']}/{current_time}")
+    # tb_writer = SummaryWriter(log_dir=f"{config['training']['log_dir']}/{current_time}")
+    wandb_logger = wandb.init(project="selftraining", entity="transformersclub", group="distillation", config={})
+
     tokenizer = Tokenizer(str(pretrained_model_path / "tokenizer.json"))
 
     train_dataset = CountdownTasksDataset(
@@ -87,8 +91,13 @@ def main(config_path: str):
         generator=generator,
         batch_size=NUM_QUESTIONS_PER_BATCH,
     )
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))  # set by torchrun
+    torch.cuda.set_device(local_rank)
 
     model = Transformer.from_pretrained(pretrained_model_path, device=device).train()
+    model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[local_rank], output_device=local_rank
+    )
 
     optimizer = MemoryEfficientAdamW(
         model.parameters(),
@@ -159,23 +168,24 @@ def main(config_path: str):
         if step % config["training"]["eval_interval"] == 0:
             eval_success_rate = evaluate(model, tokenizer, device, dtype, config)
             print(f"\rEval success rate: {eval_success_rate:.2f}" + " " * 100)
-            tb_writer.add_scalar("success_rate/eval", eval_success_rate, step)
+            wandb_logger.log({"success_rate/eval": eval_success_rate})
 
-        tb_writer.add_scalar("loss", loss, step)
-        tb_writer.add_scalar("mean_reward", mean_reward, step)
-        tb_writer.add_scalar("std_reward", std_reward, step)
-        tb_writer.add_scalar("success_rate/train", success_rate, step)
-        tb_writer.add_scalar("format_reward", format_reward, step)
-        tb_writer.add_scalar("grad_norm", grad_norm, step)
-        tb_writer.add_scalar("duration", duration, step)
-        tb_writer.add_scalar("num_finished_episodes", num_finished_episodes, step)
-        tb_writer.add_scalar("learning_rate", lr, step)
-        tb_writer.add_scalar("mean_response_len", mean_response_len, step)
-        tb_writer.add_scalar("entropy", entropy, step)
-        for i, episode in enumerate(episodes):
-            # TensorBoard treats text as markdown.
-            text = html.escape(episode.text)
-            tb_writer.add_text(f"text_{i}", f"<pre>{text}</pre>", step)
+        wandb_logger.log({"loss": loss})
+        wandb_logger.log({"mean_reward": mean_reward})
+        wandb_logger.log({"std_reward": std_reward})
+        wandb_logger.log({"success_rate/train": success_rate})
+        wandb_logger.log({"format_reward": format_reward})
+        wandb_logger.log({"grad_norm": grad_norm})
+        wandb_logger.log({"duration": duration})
+        wandb_logger.log({"num_finished_episodes": num_finished_episodes})
+        wandb_logger.log({"learning_rate": lr})
+        wandb_logger.log({"mean_response_len": mean_response_len})
+        wandb_logger.log({"entropy": entropy})
+        # TODL
+        # for i, episode in enumerate(episodes):
+        #     # TensorBoard treats text as markdown.
+        #     text = html.escape(episode.text)
+        #     wandb_logger.log({f"text_{i}": f"<pre>{text}</pre>"})
 
         # save checkpoint
         if step % config["training"]["ckpt_save_interval"] == 0:
@@ -188,4 +198,16 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml")
     args = parser.parse_args()
+
+    if not dist.is_initialized():  # make sure only one worker does the group init
+        if "RANK" not in os.environ:
+            # Local single-process fallback
+            os.environ["RANK"] = "0"
+            os.environ["WORLD_SIZE"] = "1"
+            os.environ["LOCAL_RANK"] = "0"
+            os.environ["MASTER_ADDR"] = "localhost"
+            os.environ["MASTER_PORT"] = "29500"  # can be any free port
+
+        dist.init_process_group(backend="nccl" if torch.cuda.is_available() else "gloo")
+
     main(args.config)
