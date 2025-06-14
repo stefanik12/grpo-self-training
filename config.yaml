@@ -2,9 +2,11 @@ model:
   pretrained_model_path: "Qwen2.5-3B-Instruct"
   device: "cuda"
   dtype: "bfloat16"
-data:
-  path: "Countdown-Tasks-3to4"
+task:
+  _target_: "tasks.countdown_task.CountdownTask"
+  data_path: "Countdown-Tasks-3to4"
   test_size: 128
+  tokenizer: "Qwen2.5-3B-Instruct"
 training:
   random_seed: 1337
   max_prompt_len: 256

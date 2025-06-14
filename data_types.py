@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import Dict, List
 
 
@@ -25,3 +26,8 @@ class MiniBatch:
     prefix_token_ids: List[List[int]]
     numbers: List[List[int]]
     target: List[int]
+
+
+class Split(Enum):
+    train = 1
+    test = 2

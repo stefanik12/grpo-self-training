@@ -1,38 +1,34 @@
-import html
 import os
 import time
 from argparse import ArgumentParser
 from datetime import datetime
 from pathlib import Path
 
+import hydra
 import numpy as np
 import torch
+import torch.distributed as dist
+import wandb
 import yaml
 from torch.utils.data import DataLoader
-import wandb 
 
-from countdown_task import CountdownTasksDataset, reward_function
+from data_types import Split
 from grpo import rollout, update_policy
+from objects import Task
 from optimizer import MemoryEfficientAdamW
 from qwen2_model import Transformer
 from tokenizer import Tokenizer
-import torch.distributed as dist
 
 
-def evaluate(model, tokenizer, device, dtype, config):
-    test_dataset = CountdownTasksDataset(
-        data_path=config["data"]["path"],
-        tokenizer=tokenizer,
-        split="test",
-        test_size=config["data"]["test_size"],
-    )
+def evaluate(model, task: Task, device, dtype, config):
+    test_dataset = task.get_dataset(Split.test)
     generator = torch.Generator(device=device)
     # We reduce the batch size by half as we want to
     # generate twice as long trajectories.
     dataloader = DataLoader(
         test_dataset,
         shuffle=False,
-        collate_fn=CountdownTasksDataset.collate_fn,
+        collate_fn=task.collator_function(),
         generator=generator,
         batch_size=config["training"]["batch_size"] // 2,
         drop_last=False,
@@ -41,11 +37,11 @@ def evaluate(model, tokenizer, device, dtype, config):
     for batch in dataloader:
         episodes = rollout(
             model=model,
-            tokenizer=tokenizer,
+            tokenizer=task.tokenizer,
             batch=batch,
             max_gen_len=config["training"]["max_gen_len"] * 2,
             num_answer_per_question=1,
-            reward_function=reward_function,
+            reward_function=task.reward_function,
             device=device,
             dtype=dtype,
         )
@@ -77,17 +73,14 @@ def main(config_path: str):
 
     tokenizer = Tokenizer(str(pretrained_model_path / "tokenizer.json"))
 
-    train_dataset = CountdownTasksDataset(
-        data_path=config["data"]["path"],
-        tokenizer=tokenizer,
-        split="train",
-        test_size=config["data"]["test_size"],
-    )
+    task = hydra.utils.instantiate(config["task"])
+
+    train_dataset = task.get_dataset(Split.train)
     generator = torch.Generator(device=device)
     train_dataloader = DataLoader(
         train_dataset,
         shuffle=True,
-        collate_fn=CountdownTasksDataset.collate_fn,
+        collate_fn=task.collator_function(),
         generator=generator,
         batch_size=NUM_QUESTIONS_PER_BATCH,
     )
@@ -112,13 +105,13 @@ def main(config_path: str):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     for step, batch in enumerate(train_dataloader, start=1):
-        episodes = rollout(
-            model=model,
+        episodes = rollout(  # TODO: rollout will be probably parametrized by a pipeline
+            model=model,     #  but we need to check that pipe
             tokenizer=tokenizer,
             batch=batch,
             max_gen_len=config["training"]["max_gen_len"],
             num_answer_per_question=NUM_ANSWERS_PER_QUESTION,
-            reward_function=reward_function,
+            reward_function=task.reward_function,
             device=device,
             dtype=dtype,
         )
@@ -166,7 +159,7 @@ def main(config_path: str):
             f"entropy: {entropy:.2f}"
         )
         if step % config["training"]["eval_interval"] == 0:
-            eval_success_rate = evaluate(model, tokenizer, device, dtype, config)
+            eval_success_rate = evaluate(model, task, device, dtype, config)
             print(f"\rEval success rate: {eval_success_rate:.2f}" + " " * 100)
             wandb_logger.log({"success_rate/eval": eval_success_rate})
 
@@ -181,7 +174,7 @@ def main(config_path: str):
         wandb_logger.log({"learning_rate": lr})
         wandb_logger.log({"mean_response_len": mean_response_len})
         wandb_logger.log({"entropy": entropy})
-        # TODL
+        # TODO: log output texts
         # for i, episode in enumerate(episodes):
         #     # TensorBoard treats text as markdown.
         #     text = html.escape(episode.text)
@@ -211,3 +204,9 @@ if __name__ == "__main__":
         dist.init_process_group(backend="nccl" if torch.cuda.is_available() else "gloo")
 
     main(args.config)
+
+    # TODO future plans:
+    # 1. Abstractize task, retype and integrate it into grpo
+    # 2. Implement it with current task
+    # 3. Implement it with MT
+
