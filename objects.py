@@ -1,18 +1,40 @@
 import abc
-from typing import Dict, Any, Optional, Callable, List
+from typing import Dict, Any, Optional, Callable, List, Union, Tuple
 
 import torch
+from transformers import PreTrainedTokenizer
 
-from data_types import MiniBatch, Split
+from data_types import MiniBatch, Split, Episode
+from tokenizer import Tokenizer
 
 
 class Task(abc.ABC):
 
+    @abc.abstractmethod
     def get_dataset(self, split: Split) -> torch.utils.data.Dataset:
         pass
 
+    @abc.abstractmethod
     def collator_function(self) -> Callable[[List[Dict[str, Any]]], MiniBatch]:
         pass
 
-    def reward_function(self, response: str, label: Optional[str] = None) -> Dict[str, Any]:
+    @abc.abstractmethod
+    def reward_function(self, response: str, label: Optional[str] = None) -> Tuple[float, Dict[str, float]]:
+        pass
+
+
+class GenerationStrategy(abc.ABC):
+
+    def __init__(self, max_gen_len: int):
+        self.max_gen_len = max_gen_len
+
+    @abc.abstractmethod
+    @torch.no_grad()
+    def generate(self,
+                 model: torch.nn.Module,
+                 tokenizer: Union[Tokenizer, PreTrainedTokenizer],
+                 batch: MiniBatch,
+                 num_answers_per_question: int,
+                 reward_function: Callable[[str, str], Tuple[float, Dict[str, Any]]],
+                 dtype: torch.dtype) -> List[Episode]:
         pass

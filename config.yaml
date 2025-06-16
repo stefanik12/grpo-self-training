@@ -1,7 +1,11 @@
 model:
+  class: "custom_models.qwen.Transformer"
   pretrained_model_path: "Qwen2.5-3B-Instruct"
   device: "cuda"
   dtype: "bfloat16"
+generation_strategy:
+  _target_: "generation_strategies.multinomial_sampling.MultinomialSamplingCLM"
+  max_gen_len: 1024
 task:
   _target_: "tasks.countdown_task.CountdownTask"
   data_path: "Countdown-Tasks-3to4"
@@ -10,7 +14,6 @@ task:
 training:
   random_seed: 1337
   max_prompt_len: 256
-  max_gen_len: 1024
   batch_size: 256
   num_questions_per_batch: 32
   # Number of examples per gradient accumulation step

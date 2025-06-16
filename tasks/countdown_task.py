@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Any, Optional, Callable
+from typing import Any, Optional, Callable, Tuple
 from typing import Dict, List
 
 import pandas as pd
@@ -147,20 +147,15 @@ class CountdownTask(Task):
             numbers: List[int] = None,
             target: int = None,
             end_token: str = None,
-    ) -> Dict[str, Any]:
+    ) -> Tuple[float, Dict[str, float]]:
         """Reward function for Countdown Tasks.
 
         Total reward = 0.1 * format_reward + answer_reward
         """
         format_reward = self._format_reward_function("<think>" + response, end_token)
         answer_reward = self._answer_reward_function(response, numbers, target)
-        return {
-            "reward": format_reward * 0.1 + answer_reward,
-            "reward_info": {
-                "format_reward": format_reward,
-                "answer_reward": answer_reward,
-            },
-        }
+        return (format_reward * 0.1 + answer_reward,
+                {"format_reward": format_reward, "answer_reward": answer_reward})
 
     def _format_reward_function(self, response: str, end_token: Optional[str] = None) -> float:
         """

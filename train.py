@@ -13,14 +13,13 @@ import yaml
 from torch.utils.data import DataLoader
 
 from data_types import Split
-from grpo import rollout, update_policy
-from objects import Task
+from grpo import update_policy
+from objects import Task, GenerationStrategy
 from optimizer import MemoryEfficientAdamW
-from qwen2_model import Transformer
 from tokenizer import Tokenizer
 
 
-def evaluate(model, task: Task, device, dtype, config):
+def evaluate(model, tokenizer: Tokenizer, task: Task, generation_strategy: GenerationStrategy, device, dtype, config):
     test_dataset = task.get_dataset(Split.test)
     generator = torch.Generator(device=device)
     # We reduce the batch size by half as we want to
@@ -35,15 +34,13 @@ def evaluate(model, task: Task, device, dtype, config):
     )
     success = []
     for batch in dataloader:
-        episodes = rollout(
-            model=model,
-            tokenizer=task.tokenizer,
-            batch=batch,
-            max_gen_len=config["training"]["max_gen_len"] * 2,
-            num_answer_per_question=1,
-            reward_function=task.reward_function,
-            device=device,
-            dtype=dtype,
+        episodes = generation_strategy.generate(
+                model=model,
+                tokenizer=tokenizer,
+                batch=batch,
+                num_answers_per_question=1,
+                reward_function=task.reward_function,
+                dtype=dtype
         )
         success.extend([episode.reward_info["answer_reward"] for episode in episodes])
     return np.mean(success)
@@ -69,12 +66,13 @@ def main(config_path: str):
 
     current_time = datetime.now().strftime(r"%Y%m%d-%H%M%S")
     # tb_writer = SummaryWriter(log_dir=f"{config['training']['log_dir']}/{current_time}")
-    wandb_logger = wandb.init(project="selftraining", entity="transformersclub", group="distillation", config={})
+    wandb_logger = wandb.init(project="selftraining", entity="transformersclub", config={})
 
     tokenizer = Tokenizer(str(pretrained_model_path / "tokenizer.json"))
 
     task = hydra.utils.instantiate(config["task"])
 
+    # data resolution
     train_dataset = task.get_dataset(Split.train)
     generator = torch.Generator(device=device)
     train_dataloader = DataLoader(
@@ -87,10 +85,12 @@ def main(config_path: str):
     local_rank = int(os.environ.get("LOCAL_RANK", 0))  # set by torchrun
     torch.cuda.set_device(local_rank)
 
-    model = Transformer.from_pretrained(pretrained_model_path, device=device).train()
-    model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[local_rank], output_device=local_rank
-    )
+    # model resolution
+    ModelCls = hydra.utils.get_class(config["model"]["class"])
+    model = ModelCls.from_pretrained(pretrained_model_path, device=device).train()
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
+
+    generation_strategy: GenerationStrategy = hydra.utils.instantiate(config["generation_strategy"])
 
     optimizer = MemoryEfficientAdamW(
         model.parameters(),
@@ -104,16 +104,15 @@ def main(config_path: str):
     ckpt_dir = Path(config["training"]["ckpt_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+    # main training iteration
     for step, batch in enumerate(train_dataloader, start=1):
-        episodes = rollout(  # TODO: rollout will be probably parametrized by a pipeline
-            model=model,     #  but we need to check that pipe
-            tokenizer=tokenizer,
-            batch=batch,
-            max_gen_len=config["training"]["max_gen_len"],
-            num_answer_per_question=NUM_ANSWERS_PER_QUESTION,
-            reward_function=task.reward_function,
-            device=device,
-            dtype=dtype,
+        episodes = generation_strategy.generate(
+                model=model,
+                tokenizer=tokenizer,
+                batch=batch,
+                num_answers_per_question=NUM_ANSWERS_PER_QUESTION,
+                reward_function=task.reward_function,
+                dtype=dtype
         )
         if config["training"]["skip_unfinished_episodes"]:
             episodes = [episode for episode in episodes if episode.is_finished]
@@ -159,7 +158,7 @@ def main(config_path: str):
             f"entropy: {entropy:.2f}"
         )
         if step % config["training"]["eval_interval"] == 0:
-            eval_success_rate = evaluate(model, task, device, dtype, config)
+            eval_success_rate = evaluate(model, tokenizer, task, generation_strategy, device, dtype, config)
             print(f"\rEval success rate: {eval_success_rate:.2f}" + " " * 100)
             wandb_logger.log({"success_rate/eval": eval_success_rate})
 
@@ -206,7 +205,10 @@ if __name__ == "__main__":
     main(args.config)
 
     # TODO future plans:
-    # 1. Abstractize task, retype and integrate it into grpo
-    # 2. Implement it with current task
-    # 3. Implement it with MT
+    # (Done) 1. Abstractize task, retype and integrate it into grpo
+    # (Done) 2. Implement it with current task
+    # (Done) 3. Figure abstractization of generation:
+    # 4. Abstractize and implement Objective
+    # ...
+    # #. Implement MT task with NLLB model
 
