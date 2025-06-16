@@ -13,8 +13,7 @@ import yaml
 from torch.utils.data import DataLoader
 
 from data_types import Split
-from grpo import update_policy
-from objects import Task, GenerationStrategy
+from objects import Task, GenerationStrategy, Objective
 from optimizer import MemoryEfficientAdamW
 from tokenizer import Tokenizer
 
@@ -32,18 +31,26 @@ def evaluate(model, tokenizer: Tokenizer, task: Task, generation_strategy: Gener
         batch_size=config["training"]["batch_size"] // 2,
         drop_last=False,
     )
-    success = []
+    inputs, preds, expected, success = [], [], [], []
     for batch in dataloader:
         episodes = generation_strategy.generate(
                 model=model,
                 tokenizer=tokenizer,
                 batch=batch,
-                num_answers_per_question=1,
+                num_responses=1,
                 reward_function=task.reward_function,
                 dtype=dtype
         )
-        success.extend([episode.reward_info["answer_reward"] for episode in episodes])
-    return np.mean(success)
+        inputs.extend([episode.prefix for episode in episodes])
+        preds.extend([episode.text.replace(episode.prefix, "") for episode in episodes])
+        expected.extend(batch.target)
+        success.extend([str(episode.reward_info["answer_reward"]) for episode in episodes])
+
+    table = wandb.Table(columns=["Input", "Predicted", "Expected", "Rewards"],
+                        data=list(zip(inputs, preds, expected, success)))
+    wandb.log({f"Predictions": table})
+
+    return np.mean([episode.reward for episode in episodes])
 
 
 def main(config_path: str):
@@ -92,13 +99,9 @@ def main(config_path: str):
 
     generation_strategy: GenerationStrategy = hydra.utils.instantiate(config["generation_strategy"])
 
-    optimizer = MemoryEfficientAdamW(
-        model.parameters(),
-        lr=config["training"]["learning_rate"],
-        weight_decay=config["training"]["weight_decay"],
-        betas=config["training"]["betas"],
-        enabled=config["training"]["memory_efficient_adamw"],
-    )
+    optimizer = MemoryEfficientAdamW(model.parameters(), **config["optimizer"])
+
+    objective: Objective = hydra.utils.instantiate(config["objective"])
 
     start_time = time.time()
     ckpt_dir = Path(config["training"]["ckpt_dir"])
@@ -110,21 +113,18 @@ def main(config_path: str):
                 model=model,
                 tokenizer=tokenizer,
                 batch=batch,
-                num_answers_per_question=NUM_ANSWERS_PER_QUESTION,
+                num_responses=NUM_ANSWERS_PER_QUESTION,
                 reward_function=task.reward_function,
                 dtype=dtype
         )
         if config["training"]["skip_unfinished_episodes"]:
             episodes = [episode for episode in episodes if episode.is_finished]
-        results = update_policy(
-            model=model,
-            optimizer=optimizer,
-            episodes=episodes,
-            micro_batch_size=config["training"]["micro_batch_size"],
-            pad_token_id=tokenizer.pad_token_id,
-            max_grad_norm=config["training"]["max_grad_norm"],
-            device=device,
-            dtype=dtype,
+        results = objective.update_model(
+                model=model,
+                tokenizer=tokenizer,
+                optimizer=optimizer,
+                episodes=episodes,
+                dtype=dtype
         )
         torch.cuda.synchronize()
         end_time = time.time()
@@ -208,7 +208,7 @@ if __name__ == "__main__":
     # (Done) 1. Abstractize task, retype and integrate it into grpo
     # (Done) 2. Implement it with current task
     # (Done) 3. Figure abstractization of generation:
-    # 4. Abstractize and implement Objective
+    # (Done) 4. Abstractize and implement Objective
     # ...
     # #. Implement MT task with NLLB model
 

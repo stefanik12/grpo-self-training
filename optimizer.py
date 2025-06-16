@@ -14,24 +14,24 @@ class MemoryEfficientAdamW(AdamW):
     def __init__(
         self,
         params,
-        lr=1e-3,
+        learning_rate=1e-3,
         betas=(0.9, 0.999),
         eps=1e-8,
         weight_decay=1e-2,
         amsgrad=False,
         pin_memory=True,
-        enabled=True,
+        use_memory_efficient_adamw=True,
     ):
         super(MemoryEfficientAdamW, self).__init__(
             params,
-            lr=lr,
+            lr=learning_rate,
             betas=betas,
             eps=eps,
             weight_decay=weight_decay,
             amsgrad=amsgrad,
         )
         self.pin_memory = pin_memory
-        self.enabled = enabled
+        self.enabled = use_memory_efficient_adamw
 
     @torch.no_grad()
     def step(self, closure=None):

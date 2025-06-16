@@ -34,7 +34,23 @@ class GenerationStrategy(abc.ABC):
                  model: torch.nn.Module,
                  tokenizer: Union[Tokenizer, PreTrainedTokenizer],
                  batch: MiniBatch,
-                 num_answers_per_question: int,
+                 num_responses: int,
                  reward_function: Callable[[str, str], Tuple[float, Dict[str, Any]]],
                  dtype: torch.dtype) -> List[Episode]:
+        pass
+
+
+class Objective(abc.ABC):
+
+    def __init__(self, micro_batch_size: int, max_grad_norm: float):
+        self.micro_batch_size = micro_batch_size
+        self.max_grad_norm = max_grad_norm
+
+    @abc.abstractmethod
+    def update_model(self,
+                     model : torch.nn.Module,
+                     tokenizer: Union[Tokenizer, PreTrainedTokenizer],
+                     optimizer: torch.optim.Optimizer,
+                     episodes: List[Episode],
+                     dtype: torch.dtype) -> Dict[str, float]:
         pass

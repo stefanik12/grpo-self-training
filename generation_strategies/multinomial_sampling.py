@@ -16,7 +16,7 @@ class MultinomialSamplingCLM(GenerationStrategy):
                  model: torch.nn.Module,
                  tokenizer: Union[Tokenizer, PreTrainedTokenizer],
                  batch: MiniBatch,
-                 num_answers_per_question: int,
+                 num_responses: int,
                  reward_function: Callable[[str, str], Tuple[float, Dict[str, Any]]],
                  dtype: torch.dtype) -> List[Episode]:
         device = model.device
@@ -25,7 +25,7 @@ class MultinomialSamplingCLM(GenerationStrategy):
         end_token_id = tokenizer.eos_token_id
         pad_token_id = tokenizer.pad_token_id
         prefix_token_ids = batch.prefix_token_ids
-        bsz = len(batch.prefix) * num_answers_per_question
+        bsz = len(batch.prefix) * num_responses
         min_prompt_len = min(len(t) for t in prefix_token_ids)
         max_prompt_len = max(len(t) for t in prefix_token_ids)
         total_len = self.max_gen_len + max_prompt_len
@@ -37,8 +37,8 @@ class MultinomialSamplingCLM(GenerationStrategy):
         )
         tokens = torch.full((bsz, total_len), pad_token_id, dtype=torch.long, device=device)
         for k, t in enumerate(prefix_token_ids):
-            offset = k * num_answers_per_question
-            for i in range(num_answers_per_question):
+            offset = k * num_responses
+            for i in range(num_responses):
                 tokens[offset + i, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
 
         prev_pos = 0
@@ -78,9 +78,9 @@ class MultinomialSamplingCLM(GenerationStrategy):
 
         # prepare the output episodes
         episodes = []
-        for i in range(bsz // num_answers_per_question):
-            for j in range(num_answers_per_question):
-                idx = i * num_answers_per_question + j
+        for i in range(bsz // num_responses):
+            for j in range(num_responses):
+                idx = i * num_responses + j
                 generated_token_ids = tokens_list[idx][len(batch.prefix_token_ids[i]):]
                 # remove padding tokens
                 if pad_token_id in generated_token_ids:
@@ -88,7 +88,7 @@ class MultinomialSamplingCLM(GenerationStrategy):
                                           : generated_token_ids.index(pad_token_id)
                                           ]
                 generated_text = tokenizer.detokenize(generated_token_ids)
-                reward, reward_info = reward_function(
+                reward, reward_info = reward_function(  # TODO: recast args to (inputs, outputs) format
                         response=generated_text,
                         numbers=batch.numbers[i],
                         target=batch.target[i],
