@@ -25,8 +25,8 @@ class Task(abc.ABC):
     @abc.abstractmethod
     def reward_responses(self,
                          input_batch: MiniBatch,
-                         generated_strs: List[str],
-                         generated_encodings: List[torch.Tensor]) -> List[Episode]:
+                         generated_strs: List[List[str]],
+                         generated_encodings: List[List[torch.Tensor]]) -> List[Episode]:
         pass
 
 

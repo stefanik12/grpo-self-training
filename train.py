@@ -115,7 +115,7 @@ def main(config_path: str):
                 model=model,
                 tokenizer=tokenizer,
                 batch=input_batch,
-                num_responses=1,
+                num_responses=NUM_ANSWERS_PER_QUESTION,
                 dtype=dtype
         )
         episodes = task.reward_responses(input_batch, responses_str, responses_tokens)

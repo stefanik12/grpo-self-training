@@ -76,6 +76,8 @@ class MultinomialSamplingCLM(GenerationStrategy):
         generated_token_ids_all = []
 
         for i in range(bsz // num_responses):
+            generated_strs_batch = []
+            generated_token_ids_batch = []
             for j in range(num_responses):
                 idx = i * num_responses + j
                 generated_token_ids = tokens[idx, len(batch.input_token_ids[i]):]
@@ -84,8 +86,10 @@ class MultinomialSamplingCLM(GenerationStrategy):
                     first_pad_id_idx = (generated_token_ids != pad_token_id).int().argmin(dim=0)
                     generated_token_ids = generated_token_ids[:first_pad_id_idx]
 
-                generated_strs.append(tokenizer.detokenize(generated_token_ids.tolist()))
-                generated_token_ids_all.append(generated_token_ids)
+                generated_strs_batch.append(tokenizer.detokenize(generated_token_ids.tolist()))
+                generated_token_ids_batch.append(generated_token_ids)
+            generated_strs.append(generated_strs_batch)
+            generated_token_ids_all.append(generated_token_ids_batch)
 
         # clear the output line
         print("\r", end=" " * 100, flush=True)

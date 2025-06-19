@@ -136,8 +136,8 @@ class CountdownTask(Task):
 
     def reward_responses(self,
                          in_batch: MiniBatch,
-                         generated_strs: List[str],
-                         generated_encodings: List[torch.Tensor]) -> List[Episode]:
+                         generated_strs: List[List[str]],
+                         generated_encodings: List[List[torch.Tensor]]) -> List[Episode]:
         """Reward function for Countdown Tasks.
 
         Total reward = 0.1 * format_reward + answer_reward
@@ -145,20 +145,24 @@ class CountdownTask(Task):
         out_episodes = []
 
         nums, tgt = in_batch.extra_reward_info["numbers"], in_batch.extra_reward_info["target_number"]
-        iter_args = zip(in_batch.input_strs, in_batch.input_token_ids, generated_strs, generated_encodings, nums, tgt)
-        for input_str, input_ids, generated_str, generated_ids, input_nums, tgt_num in iter_args:
 
-            format_reward = self._format_reward_function("<think>" + generated_str, self.tokenizer.eos_token)
-            answer_reward = self._answer_reward_function(generated_str, input_nums, tgt_num)
-            reward = format_reward * 0.1 + answer_reward
+        batch_iter_args = zip(in_batch.input_strs, in_batch.input_token_ids, nums, tgt)
+        for batch_i, (batch_input_str, batch_input_ids, input_nums, tgt_num) in enumerate(batch_iter_args):
 
-            new_episode = Episode(input_str=input_str,
-                                  input_ids=input_ids,
-                                  generated_str=generated_str,
-                                  generated_token_ids=generated_ids.tolist(),
-                                  reward=reward,
-                                  reward_info={"format_reward": format_reward, "answer_reward": answer_reward})
-            out_episodes.append(new_episode)
+            sample_iter_args = zip(generated_strs[batch_i], generated_encodings[batch_i])
+            for generated_str, generated_ids in sample_iter_args:
+
+                format_reward = self._format_reward_function("<think>" + generated_str, self.tokenizer.eos_token)
+                answer_reward = self._answer_reward_function(generated_str, input_nums, tgt_num)
+                reward = format_reward * 0.1 + answer_reward
+
+                new_episode = Episode(input_str=batch_input_str,
+                                      input_ids=batch_input_ids,
+                                      generated_str=generated_str,
+                                      generated_token_ids=generated_ids.tolist(),
+                                      reward=reward,
+                                      reward_info={"format_reward": format_reward, "answer_reward": answer_reward})
+                out_episodes.append(new_episode)
 
         return out_episodes
 
