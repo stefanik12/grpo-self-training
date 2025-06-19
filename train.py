@@ -26,25 +26,27 @@ def evaluate(model, tokenizer: Tokenizer, task: Task, generation_strategy: Gener
     dataloader = DataLoader(
         test_dataset,
         shuffle=False,
-        collate_fn=task.collator_function(),
+        collate_fn=test_dataset.collator_function,
         generator=generator,
         batch_size=config["training"]["batch_size"] // 2,
         drop_last=False,
     )
     inputs, preds, expected, success = [], [], [], []
-    for batch in dataloader:
-        episodes = generation_strategy.generate(
+    for input_batch in dataloader:
+        responses_str, responses_tokens = generation_strategy.generate(
                 model=model,
                 tokenizer=tokenizer,
-                batch=batch,
+                batch=input_batch,
                 num_responses=1,
-                reward_function=task.reward_function,
                 dtype=dtype
         )
-        inputs.extend([episode.prefix for episode in episodes])
-        preds.extend([episode.text.replace(episode.prefix, "") for episode in episodes])
-        expected.extend(batch.target)
-        success.extend([str(episode.reward_info["answer_reward"]) for episode in episodes])
+        episodes = task.reward_responses(input_batch, responses_str, responses_tokens)
+
+        inputs.extend(input_batch.input_strs)
+        preds.extend(responses_str)
+        expected.extend([str({k: v[i] for k, v in input_batch.extra_reward_info.items()})
+                         for i in range(len(input_batch.input_strs))])
+        success.extend([str(episode.reward_info) for episode in episodes])
 
     table = wandb.Table(columns=["Input", "Predicted", "Expected", "Rewards"],
                         data=list(zip(inputs, preds, expected, success)))
@@ -85,7 +87,7 @@ def main(config_path: str):
     train_dataloader = DataLoader(
         train_dataset,
         shuffle=True,
-        collate_fn=task.collator_function(),
+        collate_fn=train_dataset.collator_function,
         generator=generator,
         batch_size=NUM_QUESTIONS_PER_BATCH,
     )
@@ -108,15 +110,16 @@ def main(config_path: str):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # main training iteration
-    for step, batch in enumerate(train_dataloader, start=1):
-        episodes = generation_strategy.generate(
+    for step, input_batch in enumerate(train_dataloader, start=1):
+        responses_str, responses_tokens = generation_strategy.generate(
                 model=model,
                 tokenizer=tokenizer,
-                batch=batch,
-                num_responses=NUM_ANSWERS_PER_QUESTION,
-                reward_function=task.reward_function,
+                batch=input_batch,
+                num_responses=1,
                 dtype=dtype
         )
+        episodes = task.reward_responses(input_batch, responses_str, responses_tokens)
+
         if config["training"]["skip_unfinished_episodes"]:
             episodes = [episode for episode in episodes if episode.is_finished]
         results = objective.update_model(
@@ -137,7 +140,6 @@ def main(config_path: str):
             episode.reward_info["format_reward"] for episode in episodes
         ]
         answer_reward = [episode.reward_info["answer_reward"] for episode in episodes]
-        num_finished_episodes = sum(episode.is_finished for episode in episodes)
         mean_reward = np.mean(reward)
         std_reward = np.std(reward)
         success_rate = np.mean(answer_reward)
@@ -153,7 +155,6 @@ def main(config_path: str):
             f"\rStep {step}, mean_reward: {mean_reward:.2f}, "
             f"train success_rate: {success_rate:.2f}, "
             f"grad_norm: {grad_norm:.2f}, duration: {duration:.2f}, "
-            f"num_finished_episodes: {num_finished_episodes}, "
             f"mean_response_len: {mean_response_len:.2f}, "
             f"entropy: {entropy:.2f}"
         )
@@ -169,7 +170,6 @@ def main(config_path: str):
         wandb_logger.log({"format_reward": format_reward})
         wandb_logger.log({"grad_norm": grad_norm})
         wandb_logger.log({"duration": duration})
-        wandb_logger.log({"num_finished_episodes": num_finished_episodes})
         wandb_logger.log({"learning_rate": lr})
         wandb_logger.log({"mean_response_len": mean_response_len})
         wandb_logger.log({"entropy": entropy})

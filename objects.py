@@ -8,18 +8,25 @@ from data_types import MiniBatch, Split, Episode
 from tokenizer import Tokenizer
 
 
+class CollatedDataset(abc.ABC, torch.utils.data.Dataset):
+
+    @staticmethod
+    @abc.abstractmethod
+    def collator_function(batch: List[Dict[str, Any]]) -> Callable[[List[Dict[str, Any]]], MiniBatch]:
+        pass
+
+
 class Task(abc.ABC):
 
     @abc.abstractmethod
-    def get_dataset(self, split: Split) -> torch.utils.data.Dataset:
+    def get_dataset(self, split: Split) -> CollatedDataset:
         pass
 
     @abc.abstractmethod
-    def collator_function(self) -> Callable[[List[Dict[str, Any]]], MiniBatch]:
-        pass
-
-    @abc.abstractmethod
-    def reward_function(self, response: str, label: Optional[str] = None) -> Tuple[float, Dict[str, float]]:
+    def reward_responses(self,
+                         input_batch: MiniBatch,
+                         generated_strs: List[str],
+                         generated_encodings: List[torch.Tensor]) -> List[Episode]:
         pass
 
 
@@ -35,8 +42,7 @@ class GenerationStrategy(abc.ABC):
                  tokenizer: Union[Tokenizer, PreTrainedTokenizer],
                  batch: MiniBatch,
                  num_responses: int,
-                 reward_function: Callable[[str, str], Tuple[float, Dict[str, Any]]],
-                 dtype: torch.dtype) -> List[Episode]:
+                 dtype: torch.dtype) -> Tuple[List[str], List[torch.Tensor]]:
         pass
 
 

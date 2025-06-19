@@ -1,18 +1,16 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 
 
 @dataclass
 class Episode:
     """Store all relevant information of an episode."""
 
-    prefix: str
-    text: str
-    prefix_token_ids: List[int]
-    prefix_tokens: List[str]
+    input_str: str
+    input_ids: List[int]
+    generated_str: str
     generated_token_ids: List[int]
-    is_finished: bool
     reward: float
     reward_info: Dict[str, float]
 
@@ -21,11 +19,9 @@ class Episode:
 class MiniBatch:
     """Batch of data for each training step."""
 
-    prefix: List[str]
-    prefix_tokens: List[List[str]]
-    prefix_token_ids: List[List[int]]
-    numbers: List[List[int]]
-    target: List[int]
+    input_strs: List[str]
+    input_token_ids: List[List[int]]
+    extra_reward_info: Optional[Dict[str, Any]] = None
 
 
 class Split(Enum):

@@ -2,7 +2,6 @@ import dataclasses
 from collections import defaultdict
 from typing import Union, List, Dict
 
-import math
 import numpy as np
 import torch
 from transformers import PreTrainedTokenizer
@@ -19,7 +18,7 @@ class GRPO(Objective):
         """Normalize rewards per group. A group is defined by the prefix."""
         groups = defaultdict(list)
         for episode in episodes:
-            groups[tuple(episode.prefix)].append(episode)
+            groups[tuple(episode.input_str)].append(episode)
         output = []
         for group in groups.values():
             group_rewards = [item.reward for item in group]
@@ -48,7 +47,7 @@ class GRPO(Objective):
 
         episodes = self.normalize_rewards_per_group(episodes)
         # sort episodes by token length for efficient (micro-)batching
-        episodes.sort(key=lambda x: len(x.prefix_token_ids) + len(x.generated_token_ids))
+        episodes.sort(key=lambda x: len(x.input_ids) + len(x.generated_token_ids))
 
         num_target_tokens = sum(len(episode.generated_token_ids) for episode in episodes)
         entropy = 0.0
@@ -59,18 +58,18 @@ class GRPO(Objective):
             j = min(i + self.micro_batch_size, len(episodes))
             batch_episodes = episodes[i:j]
             batch_lengths = [
-                len(episode.prefix_token_ids) + len(episode.generated_token_ids)
+                len(episode.input_ids) + len(episode.generated_token_ids)
                 for episode in batch_episodes
             ]
             batch_max_length = max(batch_lengths)
             batch_token_ids = [
-                episode.prefix_token_ids
+                episode.input_ids
                 + episode.generated_token_ids
                 + [tokenizer.pad_token_id] * (batch_max_length - batch_lengths[i])
                 for i, episode in enumerate(batch_episodes)
             ]
             batch_masks = [
-                [0] * len(episode.prefix_token_ids)
+                [0] * len(episode.input_ids)
                 + [1] * len(episode.generated_token_ids)
                 + [0] * (batch_max_length - batch_lengths[i])
                 for i, episode in enumerate(batch_episodes)

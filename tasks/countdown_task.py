@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Any, Optional, Callable, Tuple
+from typing import Any, Optional
 from typing import Dict, List
 
 import pandas as pd
@@ -9,10 +9,9 @@ import torch
 from jinja2 import Environment
 from tokenizers import Encoding
 from tokenizers import Tokenizer as TokenizerBase
-from torch.utils.data import Dataset
 
-from data_types import MiniBatch, Split
-from objects import Task
+from data_types import MiniBatch, Split, Episode
+from objects import Task, CollatedDataset
 
 SYSTEM_MESSAGE = (
     "You are a helpful assistant. You first think about the reasoning process "
@@ -58,7 +57,7 @@ class Tokenizer:
         return self.tokenizer.decode(token_ids, skip_special_tokens=False)
 
 
-class CountdownTasksDataset(Dataset):
+class CountdownTasksDataset(CollatedDataset):
     """Prepare Countdown Tasks for training"""
 
     def __init__(
@@ -108,19 +107,16 @@ class CountdownTasksDataset(Dataset):
         }
 
     @staticmethod
-    def collate_fn(batch: List[Dict[str, Any]]) -> MiniBatch:
+    def collator_function(batch: List[Dict[str, Any]]) -> MiniBatch:
         """Collate examples into a batch."""
         numbers = [item["nums"] for item in batch]
         target = [item["target"] for item in batch]
         prefix = [item["prefix"] for item in batch]
-        prefix_tokens = [item["prefix_tokens"] for item in batch]
         prefix_token_ids = [item["prefix_token_ids"] for item in batch]
         return MiniBatch(
-            numbers=numbers,
-            target=target,
-            prefix=prefix,
-            prefix_tokens=prefix_tokens,
-            prefix_token_ids=prefix_token_ids,
+                input_strs=prefix,
+                input_token_ids=prefix_token_ids,
+                extra_reward_info={"numbers": numbers, "target_number": target},
         )
 
 
@@ -138,24 +134,33 @@ class CountdownTask(Task):
     def get_dataset(self, split: Split) -> torch.utils.data.Dataset:
         return CountdownTasksDataset(self.tokenizer, self.data_path, split, test_size=self.test_size)
 
-    def collator_function(self) -> Callable[[List[Dict[str, Any]]], MiniBatch]:
-        return CountdownTasksDataset.collate_fn
-
-    def reward_function(
-            self,
-            response: str,
-            numbers: List[int] = None,
-            target: int = None,
-            end_token: str = None,
-    ) -> Tuple[float, Dict[str, float]]:
+    def reward_responses(self,
+                         in_batch: MiniBatch,
+                         generated_strs: List[str],
+                         generated_encodings: List[torch.Tensor]) -> List[Episode]:
         """Reward function for Countdown Tasks.
 
         Total reward = 0.1 * format_reward + answer_reward
         """
-        format_reward = self._format_reward_function("<think>" + response, end_token)
-        answer_reward = self._answer_reward_function(response, numbers, target)
-        return (format_reward * 0.1 + answer_reward,
-                {"format_reward": format_reward, "answer_reward": answer_reward})
+        out_episodes = []
+
+        nums, tgt = in_batch.extra_reward_info["numbers"], in_batch.extra_reward_info["target_number"]
+        iter_args = zip(in_batch.input_strs, in_batch.input_token_ids, generated_strs, generated_encodings, nums, tgt)
+        for input_str, input_ids, generated_str, generated_ids, input_nums, tgt_num in iter_args:
+
+            format_reward = self._format_reward_function("<think>" + generated_str, self.tokenizer.eos_token)
+            answer_reward = self._answer_reward_function(generated_str, input_nums, tgt_num)
+            reward = format_reward * 0.1 + answer_reward
+
+            new_episode = Episode(input_str=input_str,
+                                  input_ids=input_ids,
+                                  generated_str=generated_str,
+                                  generated_token_ids=generated_ids.tolist(),
+                                  reward=reward,
+                                  reward_info={"format_reward": format_reward, "answer_reward": answer_reward})
+            out_episodes.append(new_episode)
+
+        return out_episodes
 
     def _format_reward_function(self, response: str, end_token: Optional[str] = None) -> float:
         """

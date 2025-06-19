@@ -17,15 +17,13 @@ class MultinomialSamplingCLM(GenerationStrategy):
                  tokenizer: Union[Tokenizer, PreTrainedTokenizer],
                  batch: MiniBatch,
                  num_responses: int,
-                 reward_function: Callable[[str, str], Tuple[float, Dict[str, Any]]],
-                 dtype: torch.dtype) -> List[Episode]:
+                 dtype: torch.dtype) -> Tuple[List[str], List[torch.Tensor]]:
         device = model.device
 
-        end_token = tokenizer.eos_token
         end_token_id = tokenizer.eos_token_id
         pad_token_id = tokenizer.pad_token_id
-        prefix_token_ids = batch.prefix_token_ids
-        bsz = len(batch.prefix) * num_responses
+        prefix_token_ids = batch.input_token_ids
+        bsz = len(batch.input_strs) * num_responses
         min_prompt_len = min(len(t) for t in prefix_token_ids)
         max_prompt_len = max(len(t) for t in prefix_token_ids)
         total_len = self.max_gen_len + max_prompt_len
@@ -73,38 +71,23 @@ class MultinomialSamplingCLM(GenerationStrategy):
         model.module.del_kv_cache()
         gc.collect()
         torch.cuda.empty_cache()
-        is_finished_list = is_finished.tolist()
-        tokens_list = tokens.tolist()
 
-        # prepare the output episodes
-        episodes = []
+        generated_strs = []
+        generated_token_ids_all = []
+
         for i in range(bsz // num_responses):
             for j in range(num_responses):
                 idx = i * num_responses + j
-                generated_token_ids = tokens_list[idx][len(batch.prefix_token_ids[i]):]
+                generated_token_ids = tokens[idx, len(batch.input_token_ids[i]):]
                 # remove padding tokens
                 if pad_token_id in generated_token_ids:
-                    generated_token_ids = generated_token_ids[
-                                          : generated_token_ids.index(pad_token_id)
-                                          ]
-                generated_text = tokenizer.detokenize(generated_token_ids)
-                reward, reward_info = reward_function(  # TODO: recast args to (inputs, outputs) format
-                        response=generated_text,
-                        numbers=batch.numbers[i],
-                        target=batch.target[i],
-                        end_token=end_token,
-                )
-                episode = Episode(
-                        prefix=batch.prefix[i],
-                        text=batch.prefix[i] + generated_text,
-                        prefix_token_ids=batch.prefix_token_ids[i],
-                        prefix_tokens=batch.prefix_tokens[i],
-                        generated_token_ids=generated_token_ids,
-                        is_finished=is_finished_list[idx],
-                        reward=reward,
-                        reward_info=reward_info,
-                )
-                episodes.append(episode)
+                    first_pad_id_idx = (generated_token_ids != pad_token_id).int().argmin(dim=0)
+                    generated_token_ids = generated_token_ids[:first_pad_id_idx]
+
+                generated_strs.append(tokenizer.detokenize(generated_token_ids.tolist()))
+                generated_token_ids_all.append(generated_token_ids)
+
         # clear the output line
         print("\r", end=" " * 100, flush=True)
-        return episodes
+
+        return generated_strs, generated_token_ids_all
