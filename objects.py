@@ -10,6 +10,16 @@ from tokenizer import Tokenizer
 
 class CollatedDataset(abc.ABC, torch.utils.data.Dataset):
 
+    def __init__(self):
+        # distributed support
+        worker_info = torch.utils.data.get_worker_info()
+        self.worker_rank = worker_info.id if worker_info is not None else 0
+        self.num_workers = worker_info.num_workers if worker_info is not None else 1
+
+    @abc.abstractmethod
+    def __len__(self):
+        pass
+
     @staticmethod
     @abc.abstractmethod
     def collator_function(batch: List[Dict[str, Any]]) -> Callable[[List[Dict[str, Any]]], MiniBatch]:
@@ -21,6 +31,10 @@ class Task(abc.ABC):
     @abc.abstractmethod
     def get_dataset(self, split: Split) -> CollatedDataset:
         pass
+
+    @property
+    def gen_kwargs(self) -> Dict[str, Any]:
+        return {}
 
     @abc.abstractmethod
     def reward_responses(self,
@@ -42,7 +56,8 @@ class GenerationStrategy(abc.ABC):
                  tokenizer: Union[Tokenizer, PreTrainedTokenizer],
                  batch: MiniBatch,
                  num_responses: int,
-                 dtype: torch.dtype) -> Tuple[List[str], List[torch.Tensor]]:
+                 dtype: torch.dtype,
+                 extra_generate_kwargs: Optional[Dict[str, Any]] = None) -> Tuple[List[str], List[torch.Tensor]]:
         pass
 
 

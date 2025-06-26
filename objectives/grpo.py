@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from transformers import PreTrainedTokenizer
 
+from custom_models.qwen import Transformer
 from data_types import Episode
 from objects import Objective
 from tokenizer import Tokenizer
@@ -49,6 +50,7 @@ class GRPO(Objective):
         # sort episodes by token length for efficient (micro-)batching
         episodes.sort(key=lambda x: len(x.input_ids) + len(x.generated_token_ids))
 
+        # TODO: generated_token_ids contain pads that bias num_target_tokens used in normalizing entropy
         num_target_tokens = sum(len(episode.generated_token_ids) for episode in episodes)
         entropy = 0.0
 
@@ -57,33 +59,52 @@ class GRPO(Objective):
 
             j = min(i + self.micro_batch_size, len(episodes))
             batch_episodes = episodes[i:j]
-            batch_lengths = [
-                len(episode.input_ids) + len(episode.generated_token_ids)
-                for episode in batch_episodes
-            ]
-            batch_max_length = max(batch_lengths)
-            batch_token_ids = [
-                episode.input_ids
-                + episode.generated_token_ids
-                + [tokenizer.pad_token_id] * (batch_max_length - batch_lengths[i])
-                for i, episode in enumerate(batch_episodes)
-            ]
-            batch_masks = [
-                [0] * len(episode.input_ids)
-                + [1] * len(episode.generated_token_ids)
-                + [0] * (batch_max_length - batch_lengths[i])
-                for i, episode in enumerate(batch_episodes)
-            ]
+
             batch_advantages = [episode.reward for episode in batch_episodes]
-            batch_token_ids = torch.tensor(batch_token_ids, device=device, dtype=torch.long)
-            batch_masks = torch.tensor(batch_masks, device=device, dtype=torch.bool)
             batch_advantages = torch.tensor(batch_advantages, device=device, dtype=torch.float32)
 
             with torch.autocast(device_type=device.type, dtype=dtype):
-                input_token_ids = batch_token_ids[:, :-1]
-                target_token_ids = batch_token_ids[:, 1:]
-                target_masks = batch_masks[:, 1:]
-                logits = model(input_token_ids).float()
+                # TODO: this is hot-fix: logits inference probably needs to be parametrized
+                if hasattr(model.module, "config") and model.module.config.is_encoder_decoder:
+                    input_token_ids = torch.tensor([episode.input_ids for episode in batch_episodes])
+                    # input_masks = torch.tensor([episode.generated_token_ids for episode in batch_episodes])
+                    target_token_ids = torch.tensor([episode.generated_token_ids for episode in batch_episodes])
+                    # target_masks = torch.tensor([episode.generated_token_ids for episode in batch_episodes])
+                    batch_lengths = [torch.where(torch.tensor(episode.input_ids) != tokenizer.pad_token_id)[0].max() + 1
+                                     for episode in batch_episodes]
+                    batch_max_length = max(len(episode.input_ids) for episode in batch_episodes)
+                    # batch_token_ids = [episode.generated_token_ids + [tokenizer.pad_token_id] * (batch_max_length - batch_lengths[i])
+                    #                    for i, episode in enumerate(batch_episodes)]
+                    input_masks = torch.tensor([[1] * batch_lengths[i] + [0] * (batch_max_length - batch_lengths[i])
+                                                for i, episode in enumerate(batch_episodes)])
+                    target_lengths = [torch.where(torch.tensor(episode.generated_token_ids) != tokenizer.pad_token_id)[0].max() + 1
+                                     for episode in batch_episodes]
+                    max_target_length = max(len(episode.generated_token_ids) for episode in batch_episodes)
+                    target_masks = torch.tensor([[1] * target_lengths[i] + [0] * (max_target_length - target_lengths[i])
+                                                 for i, episode in enumerate(batch_episodes)])
+                    # TODO: episode types: do not cast into from tensor to list and back
+                    # hidden_states = model.module.base_model.encoder(input_token_ids).last_hidden_state
+                    logits = model(input_ids=input_token_ids, attention_mask=input_masks,
+                                   decoder_attention_mask=target_masks, labels=target_token_ids).logits
+                elif isinstance(model.module, Transformer):
+                    batch_lengths = [len(episode.input_ids) + len(episode.generated_token_ids)
+                                     for episode in batch_episodes]
+                    batch_max_length = max(batch_lengths)
+
+                    batch_token_ids = [episode.input_ids + episode.generated_token_ids + [tokenizer.pad_token_id] * (batch_max_length - batch_lengths[i])
+                                       for i, episode in enumerate(batch_episodes)]
+                    batch_masks = [[0] * len(episode.input_ids) + [1] * len(episode.generated_token_ids) + [0] * (batch_max_length - batch_lengths[i])
+                                   for i, episode in enumerate(batch_episodes)]
+                    batch_token_ids = torch.tensor(batch_token_ids, device=device, dtype=torch.long)
+                    batch_masks = torch.tensor(batch_masks, device=device, dtype=torch.bool)
+
+                    input_token_ids = batch_token_ids[:, :-1]
+                    target_token_ids = batch_token_ids[:, 1:]
+                    target_masks = batch_masks[:, 1:]
+
+                    logits = model(input_token_ids).float()
+                else:
+                    raise NotImplementedError("Logits inference for other models needs to be implemented.")
 
             log_probs = -torch.nn.functional.cross_entropy(
                     logits.reshape(-1, logits.size(-1)),

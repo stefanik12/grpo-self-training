@@ -16,8 +16,8 @@ class MultinomialSamplingCLM(GenerationStrategy):
                  model: torch.nn.Module,
                  tokenizer: Union[Tokenizer, PreTrainedTokenizer],
                  batch: MiniBatch,
-                 num_responses: int,
-                 dtype: torch.dtype) -> Tuple[List[str], List[torch.Tensor]]:
+                 num_responses: int, dtype: torch.dtype,
+                 extra_generate_kwargs=None) -> Tuple[List[str], List[torch.Tensor]]:
         device = model.device
 
         end_token_id = tokenizer.eos_token_id
@@ -27,12 +27,15 @@ class MultinomialSamplingCLM(GenerationStrategy):
         min_prompt_len = min(len(t) for t in prefix_token_ids)
         max_prompt_len = max(len(t) for t in prefix_token_ids)
         total_len = self.max_gen_len + max_prompt_len
-        model.module.init_kv_cache(
-                max_batch_size=bsz,
-                max_seq_len=total_len,
-                device=device,
-                dtype=dtype,
-        )
+
+        if hasattr(model.module, "init_kv_cache"):
+            # custom model speedup
+            model.module.init_kv_cache(
+                    max_batch_size=bsz,
+                    max_seq_len=total_len,
+                    device=device,
+                    dtype=dtype,
+            )
         tokens = torch.full((bsz, total_len), pad_token_id, dtype=torch.long, device=device)
         for k, t in enumerate(prefix_token_ids):
             offset = k * num_responses
@@ -51,7 +54,11 @@ class MultinomialSamplingCLM(GenerationStrategy):
                     end="",
             )
             with torch.autocast(device_type=device.type, dtype=dtype):
-                logits = model.module.inference(tokens[:, prev_pos:cur_pos], prev_pos)
+                if hasattr(model.module, "inference"):
+                    # custom model support
+                    logits = model.module.inference(tokens[:, prev_pos:cur_pos], prev_pos)
+                else:
+                    logits = model.module(tokens[:, prev_pos:cur_pos], prev_pos)
             probs = torch.softmax(logits[:, -1], dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
             next_token = next_token.reshape(-1)
@@ -68,7 +75,9 @@ class MultinomialSamplingCLM(GenerationStrategy):
             prev_pos = cur_pos
             if is_finished.all():
                 break
-        model.module.del_kv_cache()
+        if hasattr(model.module, "del_kv_cache"):
+            # custom model speedup
+            model.module.del_kv_cache()
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -95,3 +104,31 @@ class MultinomialSamplingCLM(GenerationStrategy):
         print("\r", end=" " * 100, flush=True)
 
         return generated_strs, generated_token_ids_all
+
+
+class MultinomialSamplingHF(GenerationStrategy):
+    """
+    Support for any generation strategy implemented in HF Transformers generate(),
+    `extra_generate_kwargs` are passed to generate() when sampling predictions.
+    """
+
+    def generate(self, model: torch.nn.Module,
+                 tokenizer: Union[Tokenizer, PreTrainedTokenizer],
+                 batch: MiniBatch,
+                 num_responses: int,
+                 dtype: torch.dtype,
+                 extra_generate_kwargs=None) -> Tuple[List[str], List[torch.Tensor]]:
+
+        with torch.autocast(device_type=model.module.device.type, dtype=dtype):
+            batch = tokenizer.tokenizer(batch.input_strs, return_tensors="pt", padding=True)
+
+            if extra_generate_kwargs is None:
+                extra_generate_kwargs = {}
+            out = model.module.generate(**batch, max_new_tokens=self.max_gen_len, num_return_sequences=num_responses,
+                                        do_sample=True, temperature=1.0, **extra_generate_kwargs)
+
+        out_ids = out.reshape(-1, num_responses, out.shape[-1])
+        out_strs_flat = tokenizer.tokenizer.batch_decode(out, skip_special_tokens=True)
+        out_strs_per_input = [out_strs_flat[i:i+num_responses] for i in range(0, len(out_strs_flat), num_responses)]
+
+        return out_strs_per_input, out_ids

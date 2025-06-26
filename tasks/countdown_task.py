@@ -67,17 +67,13 @@ class CountdownTasksDataset(CollatedDataset):
         split: Split,
         test_size: int = 100,
     ):
+        super().__init__()
         data = pd.read_parquet(Path(data_path) / "data")
         # use the last `test_size` examples for testing
         self.data = (
             data.iloc[:-test_size] if split == Split.train else data.iloc[-test_size:]
         )
         self.tokenizer = tokenizer
-
-        # distributed support
-        worker_info = torch.utils.data.get_worker_info()
-        self.worker_rank = worker_info.id if worker_info is not None else 0
-        self.num_workers = worker_info.num_workers if worker_info is not None else 1
 
     def __len__(self):
         return len(self.data)

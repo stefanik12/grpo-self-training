@@ -18,7 +18,8 @@ from optimizer import MemoryEfficientAdamW
 from tokenizer import Tokenizer
 
 
-def evaluate(model, tokenizer: Tokenizer, task: Task, generation_strategy: GenerationStrategy, device, dtype, config):
+def evaluate(model, tokenizer: Tokenizer, task: Task, generation_strategy: GenerationStrategy,
+             device, dtype, config, user_gen_kwargs):
     test_dataset = task.get_dataset(Split.test)
     generator = torch.Generator(device=device)
     # We reduce the batch size by half as we want to
@@ -38,12 +39,13 @@ def evaluate(model, tokenizer: Tokenizer, task: Task, generation_strategy: Gener
                 tokenizer=tokenizer,
                 batch=input_batch,
                 num_responses=1,
-                dtype=dtype
+                dtype=dtype,
+                extra_generate_kwargs={**task.gen_kwargs, **user_gen_kwargs}
         )
         episodes = task.reward_responses(input_batch, responses_str, responses_tokens)
 
         inputs.extend(input_batch.input_strs)
-        preds.extend(responses_str)
+        preds.extend([resp[0] for resp in responses_str])
         expected.extend([str({k: v[i] for k, v in input_batch.extra_reward_info.items()})
                          for i in range(len(input_batch.input_strs))])
         success.extend([str(episode.reward_info) for episode in episodes])
@@ -75,9 +77,10 @@ def main(config_path: str):
 
     current_time = datetime.now().strftime(r"%Y%m%d-%H%M%S")
     # tb_writer = SummaryWriter(log_dir=f"{config['training']['log_dir']}/{current_time}")
+    # TODO: resolve singular logging in multi-gpu training so only one process logs
     wandb_logger = wandb.init(project="selftraining", entity="transformersclub", config={})
 
-    tokenizer = Tokenizer(str(pretrained_model_path / "tokenizer.json"))
+    tokenizer = hydra.utils.instantiate(config["tokenizer"])
 
     task = hydra.utils.instantiate(config["task"])
 
@@ -96,10 +99,11 @@ def main(config_path: str):
 
     # model resolution
     ModelCls = hydra.utils.get_class(config["model"]["class"])
-    model = ModelCls.from_pretrained(pretrained_model_path, device=device).train()
+    model = ModelCls.from_pretrained(pretrained_model_path).to(device).train()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
 
     generation_strategy: GenerationStrategy = hydra.utils.instantiate(config["generation_strategy"])
+    user_gen_kwargs = config.get("generation_kwargs", {})
 
     optimizer = MemoryEfficientAdamW(model.parameters(), **config["optimizer"])
 
@@ -116,7 +120,8 @@ def main(config_path: str):
                 tokenizer=tokenizer,
                 batch=input_batch,
                 num_responses=NUM_ANSWERS_PER_QUESTION,
-                dtype=dtype
+                dtype=dtype,
+                extra_generate_kwargs={**task.gen_kwargs, **user_gen_kwargs}
         )
         episodes = task.reward_responses(input_batch, responses_str, responses_tokens)
 
@@ -135,15 +140,13 @@ def main(config_path: str):
         start_time = end_time
 
         # compute and log important metrics
+
         reward = [episode.reward for episode in episodes]
-        formatted_reward = [
-            episode.reward_info["format_reward"] for episode in episodes
-        ]
-        answer_reward = [episode.reward_info["answer_reward"] for episode in episodes]
+        reward_infos = {k: np.mean([e.reward_info[k] for e in episodes]) for k, vals in episodes[0].reward_info.items()}
+
         mean_reward = np.mean(reward)
         std_reward = np.std(reward)
-        success_rate = np.mean(answer_reward)
-        format_reward = np.mean(formatted_reward)
+
         grad_norm = results["grad_norm"]
         entropy = results["entropy"]
         lr = optimizer.param_groups[0]["lr"]
@@ -152,32 +155,29 @@ def main(config_path: str):
             [len(episode.generated_token_ids) for episode in episodes]
         )
         print(
-            f"\rStep {step}, mean_reward: {mean_reward:.2f}, "
-            f"train success_rate: {success_rate:.2f}, "
-            f"grad_norm: {grad_norm:.2f}, duration: {duration:.2f}, "
+            f"\rStep {step}, "
+            f"mean_reward: {mean_reward:.2f}, "
+            f"loss: {loss:.2f}, "
+            f"grad_norm: {grad_norm:.2f}, "
+            f"duration: {duration:.2f}, "
             f"mean_response_len: {mean_response_len:.2f}, "
             f"entropy: {entropy:.2f}"
         )
         if step % config["training"]["eval_interval"] == 0:
-            eval_success_rate = evaluate(model, tokenizer, task, generation_strategy, device, dtype, config)
-            print(f"\rEval success rate: {eval_success_rate:.2f}" + " " * 100)
-            wandb_logger.log({"success_rate/eval": eval_success_rate})
+            eval_reward = evaluate(model, tokenizer, task, generation_strategy, device, dtype, config, user_gen_kwargs)
+            print(f"\rEval mean_reward: {eval_reward:.2f}" + " " * 100)
+            wandb_logger.log({"mean_reward/eval": eval_reward})
 
         wandb_logger.log({"loss": loss})
         wandb_logger.log({"mean_reward": mean_reward})
         wandb_logger.log({"std_reward": std_reward})
-        wandb_logger.log({"success_rate/train": success_rate})
-        wandb_logger.log({"format_reward": format_reward})
+
+        [wandb_logger.log({k: v}) for k, v in reward_infos.items()]
         wandb_logger.log({"grad_norm": grad_norm})
         wandb_logger.log({"duration": duration})
         wandb_logger.log({"learning_rate": lr})
         wandb_logger.log({"mean_response_len": mean_response_len})
         wandb_logger.log({"entropy": entropy})
-        # TODO: log output texts
-        # for i, episode in enumerate(episodes):
-        #     # TensorBoard treats text as markdown.
-        #     text = html.escape(episode.text)
-        #     wandb_logger.log({f"text_{i}": f"<pre>{text}</pre>"})
 
         # save checkpoint
         if step % config["training"]["ckpt_save_interval"] == 0:
@@ -194,21 +194,12 @@ if __name__ == "__main__":
     if not dist.is_initialized():  # make sure only one worker does the group init
         if "RANK" not in os.environ:
             # Local single-process fallback
-            os.environ["RANK"] = "0"
-            os.environ["WORLD_SIZE"] = "1"
-            os.environ["LOCAL_RANK"] = "0"
-            os.environ["MASTER_ADDR"] = "localhost"
-            os.environ["MASTER_PORT"] = "29500"  # can be any free port
+            os.environ["RANK"] = os.environ.get("RANK", "0")
+            os.environ["WORLD_SIZE"] = os.environ.get("WORLD_SIZE", "1")
+            os.environ["LOCAL_RANK"] = os.environ.get("LOCAL_RANK", "0")
+            os.environ["MASTER_ADDR"] = os.environ.get("MASTER_ADDR", "localhost")
+            os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")
 
         dist.init_process_group(backend="nccl" if torch.cuda.is_available() else "gloo")
 
     main(args.config)
-
-    # TODO future plans:
-    # (Done) 1. Abstractize task, retype and integrate it into grpo
-    # (Done) 2. Implement it with current task
-    # (Done) 3. Figure abstractization of generation:
-    # (Done) 4. Abstractize and implement Objective
-    # ...
-    # #. Implement MT task with NLLB model
-

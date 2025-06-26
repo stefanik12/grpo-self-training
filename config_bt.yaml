@@ -1,23 +1,29 @@
 model:
-  class: "custom_models.qwen.Transformer"
-  pretrained_model_path: "Qwen2.5-3B-Instruct"
+  class: "transformers.AutoModelForSeq2SeqLM"
+  pretrained_model_path: "facebook/nllb-200-distilled-600M"
   device: "cuda"
   dtype: "bfloat16"
 
 tokenizer:
   _target_: "tokenizer.Tokenizer"
-  path_or_id: "Qwen2.5-3B-Instruct"
+  path_or_id: "facebook/nllb-200-distilled-600M"
   local_path: false
 
 generation_strategy:
-  _target_: "generation_strategies.multinomial_sampling.MultinomialSamplingCLM"
+  _target_: "generation_strategies.multinomial_sampling.MultinomialSamplingHF"
   max_gen_len: 1024
 
 task:
-  _target_: "tasks.countdown_task.CountdownTask"
-  data_path: "Countdown-Tasks-3to4"
+  _target_: "tasks.backtranslation.Backtranslation"
+  bt_model_cls: "transformers.AutoModelForSeq2SeqLM"
+  bt_model_id: "facebook/nllb-200-distilled-600M"
+#  target_lang_clm_model_id: "Mike0307/multilingual-e5-language-detection"  # TODO: if we stick with this model, we need to fork it and clean it up
+  src_lang: "eng_Latn"
+  tgt_lang: "ces_Latn"
   test_size: 128
-  tokenizer: "Qwen2.5-3B-Instruct"
+  lm_reward_weight: 0.5
+  device: "cuda"
+  dtype: "bfloat16"
 
 optimizer:
   learning_rate: 1.0e-5
@@ -41,4 +47,4 @@ training:
   log_dir: "logs"
   skip_unfinished_episodes: false
   ckpt_save_interval: 100
-  eval_interval: 10
+  eval_interval: 20

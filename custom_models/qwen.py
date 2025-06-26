@@ -304,7 +304,9 @@ class Transformer(nn.Module):
             layer.self_attn.del_kv_cache()
 
     @classmethod
-    def from_pretrained(cls, ckpt_path, device: torch.device):
+    def from_pretrained(cls, ckpt_path):
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
         config_file = Path(ckpt_path) / "config.json"
         with open(config_file, "r") as f:
             config = json.load(f)
