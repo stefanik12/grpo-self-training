@@ -28,15 +28,13 @@ class CollatedDataset(abc.ABC, torch.utils.data.Dataset):
 
 class Evaluator(abc.ABC):
 
-    def __init__(self, model: torch.nn.Module, tokenizer: Union[Tokenizer, PreTrainedTokenizer], eval_bs: int):
-        self.model = model
-        self.tokenizer = tokenizer
-        self.eval_bs = eval_bs
+    evaluator_id: str
 
-        # TODO: dataset should be initialized in subclasses
+    def __init__(self, evaluator_id: str):
+        self.evaluator_id = evaluator_id
 
     @abc.abstractmethod
-    def evaluate(self) -> Dict[str, float]:
+    def evaluate_batch(self, inputs: List[str], expected: List[str], actual: List[str]) -> List[float]:
         pass
 
 

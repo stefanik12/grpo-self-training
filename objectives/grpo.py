@@ -91,7 +91,8 @@ class GRPO(Objective):
                                      for episode in batch_episodes]
                     batch_max_length = max(batch_lengths)
 
-                    batch_token_ids = [episode.input_ids + episode.generated_token_ids + [tokenizer.pad_token_id] * (batch_max_length - batch_lengths[i])
+                    batch_token_ids = [episode.input_ids + episode.generated_token_ids
+                                       + [tokenizer.pad_token_id] * (batch_max_length - batch_lengths[i])
                                        for i, episode in enumerate(batch_episodes)]
                     batch_masks = [[0] * len(episode.input_ids) + [1] * len(episode.generated_token_ids) + [0] * (batch_max_length - batch_lengths[i])
                                    for i, episode in enumerate(batch_episodes)]

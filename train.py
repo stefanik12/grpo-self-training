@@ -1,8 +1,8 @@
 import os
 import time
 from argparse import ArgumentParser
-from datetime import datetime
 from pathlib import Path
+from typing import List, Any, Dict
 
 import hydra
 import numpy as np
@@ -13,13 +13,14 @@ import yaml
 from torch.utils.data import DataLoader
 
 from data_types import Split
-from objects import Task, GenerationStrategy, Objective
+from objects import Task, GenerationStrategy, Objective, Evaluator
 from optimizer import MemoryEfficientAdamW
 from tokenizer import Tokenizer
 
 
-def evaluate(model, tokenizer: Tokenizer, task: Task, generation_strategy: GenerationStrategy,
-             device, dtype, config, user_gen_kwargs):
+def evaluate(model, tokenizer: Tokenizer, task: Task, evaluators: List[Evaluator],
+             generation_strategy: GenerationStrategy, device: torch.device, dtype: torch.dtype,
+             config: Dict[str, Any], user_gen_kwargs: Dict[str, Any]) -> None:
     test_dataset = task.get_dataset(Split.test)
     generator = torch.Generator(device=device)
     # We reduce the batch size by half as we want to
@@ -32,7 +33,8 @@ def evaluate(model, tokenizer: Tokenizer, task: Task, generation_strategy: Gener
         batch_size=config["training"]["batch_size"] // 2,
         drop_last=False,
     )
-    inputs, preds, expected, success = [], [], [], []
+    inputs, preds, expected, success, episodes = [], [], [], [], []
+    metrics = {e.evaluator_id: [] for e in evaluators}
     for input_batch in dataloader:
         responses_str, responses_tokens = generation_strategy.generate(
                 model=model,
@@ -42,26 +44,38 @@ def evaluate(model, tokenizer: Tokenizer, task: Task, generation_strategy: Gener
                 dtype=dtype,
                 extra_generate_kwargs={**task.gen_kwargs, **user_gen_kwargs}
         )
-        episodes = task.reward_responses(input_batch, responses_str, responses_tokens)
+        batch_episodes = task.reward_responses(input_batch, responses_str, responses_tokens)
+        inputs_str_b = input_batch.input_strs
+        preds_str_b = [resp[0] for resp in responses_str]
+        extra_reward_info_b = [str({k: v[i] for k, v in input_batch.extra_reward_info.items()})
+                          for i in range(len(input_batch.input_strs))]
+        expected_v = input_batch.extra_reward_info.get("dataset_target", [""]*len(preds_str_b))
+        inputs.extend(inputs_str_b)
+        preds.extend(preds_str_b)
+        expected.extend(extra_reward_info_b)
+        success.extend([str(episode.reward_info) for episode in batch_episodes])
+        episodes.extend(batch_episodes)
 
-        inputs.extend(input_batch.input_strs)
-        preds.extend([resp[0] for resp in responses_str])
-        expected.extend([str({k: v[i] for k, v in input_batch.extra_reward_info.items()})
-                         for i in range(len(input_batch.input_strs))])
-        success.extend([str(episode.reward_info) for episode in episodes])
+        metrics = {e.evaluator_id: metrics[e.evaluator_id] + e.evaluate_batch(inputs_str_b, expected_v, preds_str_b)
+                   for e in evaluators}
 
-    table = wandb.Table(columns=["Input", "Predicted", "Expected", "Rewards"],
-                        data=list(zip(inputs, preds, expected, success)))
-    wandb.log({f"Predictions": table})
+    metrics_keys = [e.evaluator_id for e in evaluators]
+    metrics_vals = [sum(metrics[k]) / len(metrics[k]) for k in metrics]
 
-    return np.mean([episode.reward for episode in episodes])
+    table = wandb.Table(columns=["Input", "Predicted", "Expected", "Rewards", *metrics_keys],
+                        data=list(zip(inputs, preds, expected, success, *[metrics[k] for k in metrics])))
+    wandb.log({f"eval/Predictions": table})
+    [wandb.log({"eval/"+ k: v for k, v in zip(metrics_keys, metrics_vals)})]
+
+    mean_reward = np.mean([episode.reward for episode in episodes])
+    print(f"\rEval mean_reward: {mean_reward:.2f}" + " " * 100)
+    wandb.log({"eval/reward": mean_reward})
 
 
-def main(config_path: str):
+def main(config_path: str, local_rank: int):
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    pretrained_model_path = Path(config["model"]["pretrained_model_path"])
     device = torch.device(config["model"]["device"])
     dtype_map = {
         "bfloat16": torch.bfloat16,
@@ -69,22 +83,27 @@ def main(config_path: str):
         "float32": torch.float32,
     }
     dtype = dtype_map.get(config["model"]["dtype"], torch.bfloat16)
-    torch.set_default_device(device)
     torch.random.manual_seed(config["training"]["random_seed"])
-    BATCH_SIZE = config["training"]["batch_size"]
-    NUM_QUESTIONS_PER_BATCH = config["training"]["num_questions_per_batch"]
-    NUM_ANSWERS_PER_QUESTION = BATCH_SIZE // NUM_QUESTIONS_PER_BATCH
+    torch.set_default_device(device)
 
-    current_time = datetime.now().strftime(r"%Y%m%d-%H%M%S")
-    # tb_writer = SummaryWriter(log_dir=f"{config['training']['log_dir']}/{current_time}")
-    # TODO: resolve singular logging in multi-gpu training so only one process logs
+    pretrained_model_path = Path(config["model"]["pretrained_model_path"])
+    batch_size = config["training"]["batch_size"]
+    num_prompts_per_batch = config["training"]["num_prompts_per_batch"]
+    num_responses_per_prompt = batch_size // num_prompts_per_batch
+
+    # TODO: resolve logging in multi-gpu training so only one process logs
     wandb_logger = wandb.init(project="selftraining", entity="transformersclub", config={})
 
     tokenizer = hydra.utils.instantiate(config["tokenizer"])
 
     task = hydra.utils.instantiate(config["task"])
 
-    # data resolution
+    evaluators = []
+    for evaluator_id, evaluator_cfg in config.get("evaluators", {}).items():
+        EvalCls = hydra.utils.get_class(evaluator_cfg["class"])
+        evaluators.append(EvalCls(**evaluator_cfg["init_kwargs"]))
+
+    # train data resolution
     train_dataset = task.get_dataset(Split.train)
     generator = torch.Generator(device=device)
     train_dataloader = DataLoader(
@@ -92,10 +111,8 @@ def main(config_path: str):
         shuffle=True,
         collate_fn=train_dataset.collator_function,
         generator=generator,
-        batch_size=NUM_QUESTIONS_PER_BATCH,
+        batch_size=num_prompts_per_batch,
     )
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))  # set by torchrun
-    torch.cuda.set_device(local_rank)
 
     # model resolution
     ModelCls = hydra.utils.get_class(config["model"]["class"])
@@ -115,11 +132,15 @@ def main(config_path: str):
 
     # main training iteration
     for step, input_batch in enumerate(train_dataloader, start=1):
+        # start with evaluation
+        if step % config["training"]["eval_interval"] == 0:
+            evaluate(model, tokenizer, task, evaluators, generation_strategy, device, dtype, config, user_gen_kwargs)
+
         responses_str, responses_tokens = generation_strategy.generate(
                 model=model,
                 tokenizer=tokenizer,
                 batch=input_batch,
-                num_responses=NUM_ANSWERS_PER_QUESTION,
+                num_responses=num_responses_per_prompt,
                 dtype=dtype,
                 extra_generate_kwargs={**task.gen_kwargs, **user_gen_kwargs}
         )
@@ -139,8 +160,7 @@ def main(config_path: str):
         duration = end_time - start_time
         start_time = end_time
 
-        # compute and log important metrics
-
+        # train metrics logging
         reward = [episode.reward for episode in episodes]
         reward_infos = {k: np.mean([e.reward_info[k] for e in episodes]) for k, vals in episodes[0].reward_info.items()}
 
@@ -163,10 +183,6 @@ def main(config_path: str):
             f"mean_response_len: {mean_response_len:.2f}, "
             f"entropy: {entropy:.2f}"
         )
-        if step % config["training"]["eval_interval"] == 0:
-            eval_reward = evaluate(model, tokenizer, task, generation_strategy, device, dtype, config, user_gen_kwargs)
-            print(f"\rEval mean_reward: {eval_reward:.2f}" + " " * 100)
-            wandb_logger.log({"mean_reward/eval": eval_reward})
 
         wandb_logger.log({"loss": loss})
         wandb_logger.log({"mean_reward": mean_reward})
@@ -191,15 +207,20 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="config.yaml")
     args = parser.parse_args()
 
-    if not dist.is_initialized():  # make sure only one worker does the group init
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))  # set by torchrun
+    torch.cuda.set_device(local_rank)
+    torch.set_default_device("cuda")
+
+    if not dist.is_initialized():  # only one worker does the group init
         if "RANK" not in os.environ:
-            # Local single-process fallback
+            # local/single-process defaults
             os.environ["RANK"] = os.environ.get("RANK", "0")
             os.environ["WORLD_SIZE"] = os.environ.get("WORLD_SIZE", "1")
             os.environ["LOCAL_RANK"] = os.environ.get("LOCAL_RANK", "0")
             os.environ["MASTER_ADDR"] = os.environ.get("MASTER_ADDR", "localhost")
             os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")
-
         dist.init_process_group(backend="nccl" if torch.cuda.is_available() else "gloo")
 
-    main(args.config)
+    main(args.config, local_rank)
+
+    dist.destroy_process_group()

@@ -34,7 +34,7 @@ training:
   random_seed: 1337
   max_prompt_len: 256
   batch_size: 256
-  num_questions_per_batch: 32
+  num_prompts_per_batch: 32
   micro_batch_size: 2  # Number of examples per gradient accumulation step
   max_grad_norm: 1.0
   ckpt_dir: "ckpt"
