@@ -1,5 +1,5 @@
 import itertools
-from typing import Dict, Callable, List, Any
+from typing import Dict, Callable, List, Any, Optional
 
 import datasets
 import hydra
@@ -8,11 +8,87 @@ import torch.nn.functional as F
 import transformers
 from datasets import load_dataset, Dataset
 
+import numpy as np
+from rapidfuzz.distance import Levenshtein
+from concurrent.futures import ThreadPoolExecutor
+
 from data_types import MiniBatch, Split, Episode
 from objects import Task, CollatedDataset
 
 DATASET_ID = "michal-stefanik/tatoeba_mt_ces-x"
+DLEX_WORKERS = 8
 
+def pairwise_edit_distance(
+    batch_texts: List[List[str]],
+    n_workers: Optional[int] = None,
+    dtype: torch.dtype = torch.int32,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    """
+    Compute batch pairwise Levenshtein distances using rapidfuzz in parallel (threads).
+    Returns a torch.Tensor of shape (B, N, N) on CPU or moved to `device` if specified.
+
+    - batch_texts: list of B lists, each with N strings (all inner lists must have equal length).
+    - n_workers: number of worker threads (defaults to os.cpu_count()).
+    - dtype: integer dtype for returned tensor.
+    - device: if given (e.g. torch.device('cuda')), the final tensor will be moved to that device.
+    """
+    B = len(batch_texts)
+    if B == 0:
+        return torch.empty((0, 0, 0), dtype=dtype, device=device)
+
+    # validate inner lengths
+    N = len(batch_texts[0])
+    for idx, lst in enumerate(batch_texts):
+        if len(lst) != N:
+            raise ValueError(f"All inner lists must have same length. index {idx} length {len(lst)} != {N}")
+
+    # trivial cases
+    if N == 0:
+        return torch.empty((B, 0, 0), dtype=dtype, device=device)
+    if N == 1:
+        out = torch.zeros((B, 1, 1), dtype=dtype)
+        return out.to(device) if device is not None else out
+
+    # prepare shared numpy array (write from threads)
+    arr = np.zeros((B, N, N), dtype=np.int32)
+
+    # build task list (upper-triangle only)
+    tasks = []
+    for b in range(B):
+        for i in range(N):
+            for j in range(i + 1, N):
+                tasks.append((b, i, j))
+
+    # worker computes a single pair and returns the result
+    def _worker(task):
+        b, i, j = task
+        si = batch_texts[b][i]
+        sj = batch_texts[b][j]
+        if si == sj:
+            d = 0
+        else:
+            d = int(Levenshtein.distance(si, sj))
+        return (b, i, j, d)
+
+    # thread pool; rapidfuzz releases GIL so threads are efficient
+    if n_workers is None:
+        import os
+        n_workers = max(1, (os.cpu_count() or 1))
+
+    # Use map to avoid collecting tons of futures; map yields results as workers finish
+    with ThreadPoolExecutor(max_workers=n_workers) as exe:
+        for b, i, j, d in exe.map(_worker, tasks):
+            arr[b, i, j] = d
+            arr[b, j, i] = d
+
+    # diagonal is already zero due to zeros initialization
+    out = torch.from_numpy(arr).to(dtype=dtype)
+
+    if device is not None:
+        out = out.to(device)
+
+    return out            
 
 class NLLBDataset(CollatedDataset):
 
@@ -114,7 +190,11 @@ class ParaphraseEval:
         #  - maybe it's not a good idea as it would spoil the "all bad" batches
         return [cosine_sim_matrix[i, j:j+bs].tolist() for i, j in enumerate(range(0, cosine_sim_matrix.shape[1], bs))]
 
-    def compute_pairwise_similarity(self, texts: List[List[str]]) -> List[List[List[float]]]:
+    def compute_pairwise_similarity(
+        self,
+        texts: List[List[str]],
+        device: Optional[torch.device]
+    ) -> torch.Tensor:
         """
         Batched pairwise similarity
 
@@ -124,7 +204,7 @@ class ParaphraseEval:
 
         :param texts: Matrix of size BxN with target translations (N translations
         for each of the B sentences in the batch)
-        :return: A tensor of size BxNxN (list of B matrices of size NxN each), where for each of
+        :return: A tensor of shape (B, N, N) (list of B matrices of size NxN each), where for each of
         the B source sentences, we perform the pairwise comparison between its N translations.
         """
         assert isinstance(texts, list) and isinstance(texts[0], list) and isinstance(texts[0][0], str)
@@ -137,16 +217,19 @@ class ParaphraseEval:
         embs = self.encoder.encode(flat_texts, convert_to_tensor=True)
         embs = F.normalize(embs, p=2, dim=1)
 
-        result: List[List[List[float]]] = []
+        if device is not None:
+            embs.to(device=device)
+
+        result: list[torch.Tensor] = []
 
         for i in range(B):
             chunk = embs[i * N : (i+1) * N] # (N)
             cosine_sim_matrix = torch.mm(chunk, chunk.T) # (N, N)
             cosine_sim_matrix = cosine_sim_matrix.fill_diagonal_(0) # eliminate self-comparison values
 
-            result.append(cosine_sim_matrix.tolist()) # result: (i, N, N)
+            result.append(cosine_sim_matrix) # result: (i, N, N)
 
-        return result
+        return torch.stack(result, dim=0) # return tensor of shape (B, N, N)
 
 class Backtranslation(Task):
 
@@ -167,6 +250,7 @@ class Backtranslation(Task):
         self.test_size = test_size
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
+        self.device = device
 
         self.bt_model_tokenizer = transformers.AutoTokenizer.from_pretrained(bt_model_id)
         self.bt_model: transformers.PreTrainedModel = hydra.utils.get_class(bt_model_cls).from_pretrained(bt_model_id)
@@ -203,6 +287,32 @@ class Backtranslation(Task):
             target_lang_probs = target_lang_m_probs[:, self.target_lang_index]
 
         return target_lang_probs.reshape(len(generated_strs), -1).tolist()
+
+    def _creativity_reward(self, sources: List[str], generated_strs: List[List[str]]) -> List[List[float]]:
+        d_sem = self.sim_model.compute_pairwise_similarity(generated_strs) # semantic distances
+        d_lex = pairwise_edit_distance(generated_strs, n_workers=DLEX_WORKERS, device=self.device) # lexical distances
+
+        B = len(generated_strs) # batch size
+        N = len(generated_strs[0]) # rollout count
+
+        lexical_dispersion = (1 / (N - 1)) * torch.sum(d_lex, dim=-1, keepdim=False) # higher is better
+        semantic_dispersion = (1 / (N - 1)) * torch.sum(d_sem, dim=-1, keepdim=False) # lower is better
+        
+        # semantic distance to source (identify cluster)
+        source_faithfulness = torch.FloatTensor(self.sim_model.compute_similarity(sources, generated_strs), device=self.device) # lower is better
+
+        # keepdim=True for broadcasting
+        semantic_std, semantic_mean = torch.std_mean(semantic_dispersion, dim=-1, keepdim=True)
+        lexical_std, lexical_mean = torch.std_mean(lexical_dispersion, dim=-1, keepdim=True)
+        source_std, source_mean = torch.std_mean(source_faithfulness, dim=-1, keepdim=True)
+
+        # Standardized (z-score) dispersion values
+        semantic_dispersion = (semantic_dispersion - semantic_mean) / semantic_std
+        lexical_dispersion = (lexical_dispersion - lexical_mean) / lexical_std
+        source_faithfulness = (source_faithfulness - source_mean) / source_std
+
+        # could add alpha/beta weights to control each score
+        return lexical_dispersion - semantic_dispersion - source_faithfulness
 
     def _src_lang_similarities(self, src_texts: List[str], backtranslated_texts: List[List[str]]) -> List[List[float]]:
         similarities_batched = self.sim_model.compute_similarity(src_texts, backtranslated_texts)
