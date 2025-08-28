@@ -242,6 +242,7 @@ class Backtranslation(Task):
                  tgt_lang: str,
                  test_size: int,
                  lm_reward_weight: float,
+                 cr_reward_weight: float,
                  device: str,
                  dtype: torch.dtype):
         super().__init__()
@@ -268,6 +269,7 @@ class Backtranslation(Task):
         self.sim_model = ParaphraseEval(source_lang_sim_encoder, device)
 
         self.lm_reward_weight = lm_reward_weight
+        self.cr_reward_weight = cr_reward_weight
 
     def get_dataset(self, split: Split) -> torch.utils.data.Dataset:
         return NLLBDataset(self.bt_model_id, split, self.src_lang, self.tgt_lang, self.test_size)
@@ -346,6 +348,7 @@ class Backtranslation(Task):
                          generated_strs: List[List[str]],
                          generated_encodings: List[List[torch.Tensor]]) -> List[Episode]:
         lm_rewards = self._target_lang_reward(generated_strs)
+        cr_rewards = self._creativity_reward(input_batch.input_strs, generated_strs)
         bt_rewards = self._bt_rewards(input_batch.input_strs, generated_encodings)
 
         out_episodes = []
@@ -354,9 +357,9 @@ class Backtranslation(Task):
         for batch_i, (batch_input_str, batch_input_ids) in enumerate(batch_iter_args):
 
             sample_iter_args = zip(generated_strs[batch_i], generated_encodings[batch_i],
-                                   lm_rewards[batch_i], bt_rewards[batch_i])
-            for generated_str, generated_ids, lm_reward, bt_reward in sample_iter_args:
-                combined_reward = self.lm_reward_weight * lm_reward + (1 - self.lm_reward_weight) * bt_reward
+                                   lm_rewards[batch_i], cr_rewards[batch_i], bt_rewards[batch_i])
+            for generated_str, generated_ids, lm_reward, cr_reward, bt_reward in sample_iter_args:
+                combined_reward = self.lm_reward_weight * lm_reward + self.cr_reward_weight * cr_reward + (1 - self.lm_reward_weight - self.cr_reward_weight) * bt_reward
 
                 new_episode = Episode(input_str=batch_input_str,
                                       input_ids=batch_input_ids,
