@@ -114,6 +114,39 @@ class ParaphraseEval:
         #  - maybe it's not a good idea as it would spoil the "all bad" batches
         return [cosine_sim_matrix[i, j:j+bs].tolist() for i, j in enumerate(range(0, cosine_sim_matrix.shape[1], bs))]
 
+    def compute_pairwise_similarity(self, texts: List[List[str]]) -> List[List[List[float]]]:
+        """
+        Batched pairwise similarity
+
+        Symbols:
+            B - Batch size
+            N - Rollout count (number of generations)
+
+        :param texts: Matrix of size BxN with target translations (N translations
+        for each of the B sentences in the batch)
+        :return: A tensor of size BxNxN (list of B matrices of size NxN each), where for each of
+        the B source sentences, we perform the pairwise comparison between its N translations.
+        """
+        assert isinstance(texts, list) and isinstance(texts[0], list) and isinstance(texts[0][0], str)
+
+        B = len(texts)
+        N = len(texts[0])
+
+        flat_texts = list(itertools.chain.from_iterable(texts))
+
+        embs = self.encoder.encode(flat_texts, convert_to_tensor=True)
+        embs = F.normalize(embs, p=2, dim=1)
+
+        result: List[List[List[float]]] = []
+
+        for i in range(B):
+            chunk = embs[i * N : (i+1) * N] # (N)
+            cosine_sim_matrix = torch.mm(chunk, chunk.T) # (N, N)
+            cosine_sim_matrix = cosine_sim_matrix.fill_diagonal_(0) # eliminate self-comparison values
+
+            result.append(cosine_sim_matrix.tolist()) # result: (i, N, N)
+
+        return result
 
 class Backtranslation(Task):
 
