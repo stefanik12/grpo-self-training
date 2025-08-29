@@ -5,17 +5,29 @@ description = "GRPO from scratch."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "accelerate>=1.10.1",
+    "bleurt-pytorch",
+    "datasets>=4.0.0",
+    "huggingface-hub==0.29.3",
+    "hydra-core>=1.3.2",
     "jinja2>=3.1.6",
     "pandas>=2.2.3",
     "pyarrow>=19.0.1",
     "pyyaml>=6.0.2",
     "safetensors>=0.5.3",
+    "sentence-transformers>=5.1.0",
     "tensorboard>=2.19.0",
     "tokenizers>=0.21.1",
     "torch>=2.6.0",
+    "transformers==4.50.0",
+    "unbabel-comet>=2.2.6",
+    "wandb>=0.21.1",
 ]
 
 [dependency-groups]
 dev = [
     "pytype>=2024.10.11",
 ]
+
+[tool.uv.sources]
+bleurt-pytorch = { git = "https://github.com/lucadiliello/bleurt-pytorch.git" }
