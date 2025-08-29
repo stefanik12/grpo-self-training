@@ -15,7 +15,7 @@ generation_strategy:
     max_gen_len: 1024
   eval:
     _target_: "generation_strategies.beam_search.BeamSearch"
-    max_gen_len: 1024
+    max_gen_len: 512
     num_beams: 5
     batch_size: 8
 
@@ -23,9 +23,9 @@ evaluators:
   comet:
     class: "evaluators.flores_eval.Comet"
     init_kwargs:
-      evaluator_id: "XCOMET-XL"
-      #  comet_model_id: "Unbabel/wmt22-comet-da"
-      comet_model_id: "Unbabel/XCOMET-XL"
+      evaluator_id: "COMET-DA"
+      comet_model_id: "Unbabel/wmt22-comet-da"
+#      comet_model_id: "Unbabel/XCOMET-XL"
       device: "cuda"
   bleurt:
     class: "evaluators.flores_eval.Bleurt"
@@ -61,7 +61,7 @@ objective:
 training:
   random_seed: 1337
   max_prompt_len: 256
-  batch_size: 256
+  batch_size: 256  # TODO: this is now used in eval DataLoader but also in generation_strategy.eval -- unify
   num_prompts_per_batch: 16
   micro_batch_size: 2  # Number of examples per gradient accumulation step
   max_grad_norm: 1.0
