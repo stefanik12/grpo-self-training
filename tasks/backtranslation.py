@@ -24,10 +24,11 @@ class NLLBDataset(CollatedDataset):
             tgt_lang: str,
             test_size: int = 100,
             train_size: int = 1000000,
+            tatoeba_eval_set: bool = False,
     ):
         super().__init__()
         langs_ordered = (src_lang, tgt_lang) if src_lang < tgt_lang else (tgt_lang, src_lang)
-        if split == Split.train:
+        if split == Split.train or tatoeba_eval_set:
             # Train split from Tatoeba
             langs_ordered_tatoeba = tuple(x.split("_")[0] for x in langs_ordered)
             dataset = datasets.load_dataset(DATASET_ID, "%s-%s" % langs_ordered_tatoeba, split=split.name, streaming=True)
@@ -127,19 +128,28 @@ class Backtranslation(Task):
                  test_size: int,
                  lm_reward_weight: float,
                  device: str,
-                 dtype: torch.dtype):
+                 dtype: torch.dtype,
+                 tatoeba_eval_set: bool = False,
+                 use_target_lang_perplexity: bool = False):
         super().__init__()
         self.dtype = dtype
         self.bt_model_id = bt_model_id
         self.test_size = test_size
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
+        self.tatoeba_eval_set = tatoeba_eval_set
+        if tatoeba_eval_set:
+            print("Evaluating on Tatoeba")
 
         self.bt_model_tokenizer = transformers.AutoTokenizer.from_pretrained(bt_model_id)
         self.bt_model: transformers.PreTrainedModel = hydra.utils.get_class(bt_model_cls).from_pretrained(bt_model_id)
         self.bt_model = self.bt_model.to(device)
 
-        self.target_lang_m = transformers.AutoModelForSequenceClassification.from_pretrained(target_lang_classifier)
+        self.use_target_lang_perplexity = use_target_lang_perplexity
+        if self.use_target_lang_perplexity:
+            self.target_lang_m = transformers.AutoModelForCausalLM.from_pretrained(target_lang_classifier)
+        else:
+            self.target_lang_m = transformers.AutoModelForSequenceClassification.from_pretrained(target_lang_classifier)
         self.target_lang_m = self.target_lang_m.to(device)
 
         if target_lang_classifier != "Mike0307/multilingual-e5-language-detection":
@@ -153,7 +163,8 @@ class Backtranslation(Task):
         self.lm_reward_weight = lm_reward_weight
 
     def get_dataset(self, split: Split) -> torch.utils.data.Dataset:
-        return NLLBDataset(self.bt_model_id, split, self.src_lang, self.tgt_lang, self.test_size)
+        return NLLBDataset(self.bt_model_id, split, self.src_lang, self.tgt_lang, self.test_size,
+                           tatoeba_eval_set=self.tatoeba_eval_set)
 
     def collator_function(self) -> Callable[[List[Dict[str, Any]]], MiniBatch]:
         pass
@@ -170,6 +181,24 @@ class Backtranslation(Task):
             target_lang_probs = target_lang_m_probs[:, self.target_lang_index]
 
         return target_lang_probs.reshape(len(generated_strs), -1).tolist()
+
+    def _target_lang_reward_from_perplexity(self, generated_strs: List[List[str]]) -> List[List[float]]:
+        device = self.target_lang_m.device
+        generated_strs_flat = list(itertools.chain(*generated_strs))
+
+        # no batching for now -- assuming that inference on ~256x512 tokens can fit a single GPU
+        with torch.autocast(device_type=device.type):
+            batch_inputs = self.target_lang_m_tokenizer(generated_strs_flat, return_tensors="pt", padding=True,
+                                                        truncation=True, max_length=512)
+            logits = self.target_lang_m(**batch_inputs).float()
+            log_probs = -torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    batch_inputs.input_ids.reshape(-1),
+                    ignore_index=self.target_lang_m_tokenizer.pad_token_id,
+                    reduction="none",
+            ).reshape(batch_inputs.input_ids.shape[0], -1)
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+            entropy = torch.logsumexp(logits, dim=-1) - torch.sum(probs * logits, dim=-1)
 
     def _src_lang_similarities(self, src_texts: List[str], backtranslated_texts: List[List[str]]) -> List[List[float]]:
         similarities_batched = self.sim_model.compute_similarity(src_texts, backtranslated_texts)
@@ -202,7 +231,10 @@ class Backtranslation(Task):
                          input_batch: MiniBatch,
                          generated_strs: List[List[str]],
                          generated_encodings: List[List[torch.Tensor]]) -> List[Episode]:
-        lm_rewards = self._target_lang_reward(generated_strs)
+        if self.use_target_lang_perplexity:
+            lm_rewards = self._target_lang_reward_from_perplexity(generated_strs)
+        else:
+            lm_rewards = self._target_lang_reward(generated_strs)
         bt_rewards = self._bt_rewards(input_batch.input_strs, generated_encodings)
 
         out_episodes = []

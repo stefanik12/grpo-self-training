@@ -5,7 +5,7 @@ import torch
 from objects import Evaluator
 
 
-class Flores(Evaluator):
+class Comet(Evaluator):
 
     def __init__(self, *args, comet_model_id: str, device: str, **kwargs):
         from comet import download_model, load_from_checkpoint

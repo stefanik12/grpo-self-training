@@ -48,7 +48,7 @@ def evaluate(model, tokenizer: Tokenizer, task: Task, evaluators: List[Evaluator
         inputs_str_b = input_batch.input_strs
         preds_str_b = [resp[0] for resp in responses_str]
         extra_reward_info_b = [str({k: v[i] for k, v in input_batch.extra_reward_info.items()})
-                          for i in range(len(input_batch.input_strs))]
+                               for i in range(len(input_batch.input_strs))]
         expected_v = input_batch.extra_reward_info.get("dataset_target", [""]*len(preds_str_b))
         inputs.extend(inputs_str_b)
         preds.extend(preds_str_b)
@@ -119,7 +119,8 @@ def main(config_path: str, local_rank: int):
     model = ModelCls.from_pretrained(pretrained_model_path).to(device).train()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
 
-    generation_strategy: GenerationStrategy = hydra.utils.instantiate(config["generation_strategy"])
+    train_gen_strategy: GenerationStrategy = hydra.utils.instantiate(config["generation_strategy"]["train"])
+    eval_gen_strategy: GenerationStrategy = hydra.utils.instantiate(config["generation_strategy"]["eval"])
     user_gen_kwargs = config.get("generation_kwargs", {})
 
     optimizer = MemoryEfficientAdamW(model.parameters(), **config["optimizer"])
@@ -131,12 +132,12 @@ def main(config_path: str, local_rank: int):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # main training iteration
-    for step, input_batch in enumerate(train_dataloader, start=1):
+    for step, input_batch in enumerate(train_dataloader, start=0):
         # start with evaluation
         if step % config["training"]["eval_interval"] == 0:
-            evaluate(model, tokenizer, task, evaluators, generation_strategy, device, dtype, config, user_gen_kwargs)
+            evaluate(model, tokenizer, task, evaluators, eval_gen_strategy, device, dtype, config, user_gen_kwargs)
 
-        responses_str, responses_tokens = generation_strategy.generate(
+        responses_str, responses_tokens = train_gen_strategy.generate(
                 model=model,
                 tokenizer=tokenizer,
                 batch=input_batch,
@@ -196,7 +197,7 @@ def main(config_path: str, local_rank: int):
         wandb_logger.log({"entropy": entropy})
 
         # save checkpoint
-        if step % config["training"]["ckpt_save_interval"] == 0:
+        if step != 0 and step % config["training"]["ckpt_save_interval"] == 0:
             output_file = ckpt_dir / f"ckpt_{step:06d}.pt"
             torch.save(model.state_dict(), output_file)
             print(f"Saved checkpoint to {output_file}")

@@ -10,8 +10,12 @@ tokenizer:
   local_path: false
 
 generation_strategy:
-  _target_: "generation_strategies.multinomial_sampling.MultinomialSamplingCLM"
-  max_gen_len: 1024
+  train:
+    _target_: "generation_strategies.multinomial_sampling.MultinomialSamplingCLM"
+    max_gen_len: 1024
+  eval:
+    _target_: "generation_strategies.multinomial_sampling.MultinomialSamplingCLM"
+    max_gen_len: 1024
 
 task:
   _target_: "tasks.countdown_task.CountdownTask"
