@@ -10,12 +10,18 @@ tokenizer:
   local_path: false
 
 generation_strategy:
-  _target_: "generation_strategies.multinomial_sampling.MultinomialSamplingHF"
-  max_gen_len: 1024
+  train:
+    _target_: "generation_strategies.multinomial_sampling.MultinomialSamplingHF"
+    max_gen_len: 1024
+  eval:
+    _target_: "generation_strategies.beam_search.BeamSearch"
+    max_gen_len: 1024
+    num_beams: 5
+    batch_size: 8
 
 evaluators:
   comet:
-    class: "evaluators.flores_eval.Flores"
+    class: "evaluators.flores_eval.Comet"
     init_kwargs:
       evaluator_id: "XCOMET-XL"
       #  comet_model_id: "Unbabel/wmt22-comet-da"
