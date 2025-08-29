@@ -193,7 +193,7 @@ class ParaphraseEval:
     def compute_pairwise_similarity(
         self,
         texts: List[List[str]],
-        device: Optional[torch.device]
+        device: Optional[torch.device] = None
     ) -> torch.Tensor:
         """
         Batched pairwise similarity
@@ -291,17 +291,21 @@ class Backtranslation(Task):
         return target_lang_probs.reshape(len(generated_strs), -1).tolist()
 
     def _creativity_reward(self, sources: List[str], generated_strs: List[List[str]]) -> List[List[float]]:
-        d_sem = self.sim_model.compute_pairwise_similarity(generated_strs) # semantic distances
+        d_sem = self.sim_model.compute_pairwise_similarity(generated_strs, device=self.device) # semantic distances
         d_lex = pairwise_edit_distance(generated_strs, n_workers=DLEX_WORKERS, device=self.device) # lexical distances
 
         B = len(generated_strs) # batch size
         N = len(generated_strs[0]) # rollout count
 
+        if N == 1: # safeguard to avoid ZeroDivisionError
+            print("WARNING! -- Rollout count reached 1")
+            return torch.zeros((B, N), dtype=torch.float32).tolist()
+
         lexical_dispersion = (1 / (N - 1)) * torch.sum(d_lex, dim=-1, keepdim=False) # higher is better
         semantic_dispersion = (1 / (N - 1)) * torch.sum(d_sem, dim=-1, keepdim=False) # lower is better
         
         # semantic distance to source (identify cluster)
-        source_faithfulness = torch.FloatTensor(self.sim_model.compute_similarity(sources, generated_strs), device=self.device) # lower is better
+        source_faithfulness = torch.tensor(self.sim_model.compute_similarity(sources, generated_strs), dtype=torch.float32, device=self.device) # lower is better
 
         # keepdim=True for broadcasting
         semantic_std, semantic_mean = torch.std_mean(semantic_dispersion, dim=-1, keepdim=True)
@@ -313,8 +317,10 @@ class Backtranslation(Task):
         lexical_dispersion = (lexical_dispersion - lexical_mean) / lexical_std
         source_faithfulness = (source_faithfulness - source_mean) / source_std
 
+        result = lexical_dispersion - semantic_dispersion - source_faithfulness
+
         # could add alpha/beta weights to control each score
-        return lexical_dispersion - semantic_dispersion - source_faithfulness
+        return result.tolist()
 
     def _src_lang_similarities(self, src_texts: List[str], backtranslated_texts: List[List[str]]) -> List[List[float]]:
         similarities_batched = self.sim_model.compute_similarity(src_texts, backtranslated_texts)
@@ -366,7 +372,7 @@ class Backtranslation(Task):
                                       generated_str=generated_str,
                                       generated_token_ids=generated_ids.tolist(),
                                       reward=combined_reward,
-                                      reward_info={"target_lang_reward": lm_reward, "bt_reward": bt_reward})
+                                      reward_info={"target_lang_reward": lm_reward, "creativity_reward": cr_reward, "bt_reward": bt_reward})
                 out_episodes.append(new_episode)
 
         return out_episodes
