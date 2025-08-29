@@ -1,0 +1,66 @@
+model:
+  class: "transformers.AutoModelForSeq2SeqLM"
+  pretrained_model_path: "facebook/nllb-200-distilled-600M"
+  device: "cuda"
+  dtype: "bfloat16"
+
+tokenizer:
+  _target_: "tokenizer.Tokenizer"
+  path_or_id: "facebook/nllb-200-distilled-600M"
+  local_path: false
+
+generation_strategy:
+  _target_: "generation_strategies.multinomial_sampling.MultinomialSamplingHF"
+  max_gen_len: 256
+
+evaluators:
+  comet:
+    class: "evaluators.flores_eval.Flores"
+    init_kwargs:
+      evaluator_id: "XCOMET-XL"
+      comet_model_id: "Unbabel/wmt22-comet-da"
+      # comet_model_id: "Unbabel/XCOMET-XL"
+      device: "cuda"
+  bleurt:
+    class: "evaluators.flores_eval.Bleurt"
+    init_kwargs:
+      evaluator_id: "Bleurt"
+      model_id: "lucadiliello/BLEURT-20"
+      device: "cuda"
+
+task:
+  _target_: "tasks.backtranslation.Backtranslation"
+  bt_model_cls: "transformers.AutoModelForSeq2SeqLM"
+  bt_model_id: "facebook/nllb-200-distilled-600M"
+  target_lang_classifier: "Mike0307/multilingual-e5-language-detection"  # TODO: hardcoded ordering of labels; if we stick with this model, we need to fork it and clean it up
+  source_lang_sim_encoder: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+  src_lang: "eng_Latn"
+  tgt_lang: "ces_Latn"
+  test_size: 128
+  lm_reward_weight: 0.5
+  device: "cuda"
+  dtype: "bfloat16"
+
+optimizer:
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  betas: [0.9, 0.999]
+  use_memory_efficient_adamw: true
+
+objective:
+  _target_: "objectives.grpo.GRPO"
+  micro_batch_size: 2
+  max_grad_norm: 1.0
+
+training:
+  random_seed: 1337
+  max_prompt_len: 256
+  batch_size: 128
+  num_prompts_per_batch: 16
+  micro_batch_size: 2  # Number of examples per gradient accumulation step
+  max_grad_norm: 1.0
+  ckpt_dir: "ckpt"
+  log_dir: "logs"
+  skip_unfinished_episodes: false
+  ckpt_save_interval: 100
+  eval_interval: 10
