@@ -116,7 +116,7 @@ def main(config_path: str, local_rank: int):
 
     # model resolution
     ModelCls = hydra.utils.get_class(config["model"]["class"])
-    model = ModelCls.from_pretrained(pretrained_model_path).to(device).train()
+    model = ModelCls.from_pretrained(str(pretrained_model_path)).to(device).train()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
 
     generation_strategy: GenerationStrategy = hydra.utils.instantiate(config["generation_strategy"])

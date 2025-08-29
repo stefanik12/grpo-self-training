@@ -37,7 +37,8 @@ task:
   src_lang: "eng_Latn"
   tgt_lang: "ces_Latn"
   test_size: 128
-  lm_reward_weight: 0.5
+  lm_reward_weight: 0.33
+  cr_reward_weight: 0.33
   device: "cuda"
   dtype: "bfloat16"
 
